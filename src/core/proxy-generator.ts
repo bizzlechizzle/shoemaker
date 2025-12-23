@@ -214,6 +214,7 @@ export async function generateProxy(
   const args: string[] = [
     '-y', // Overwrite output
     '-i', inputPath,
+    '-map_metadata', '0', // Preserve source metadata (timecode, creation date, etc.)
   ];
 
   // Hardware acceleration input (if using hw encoder)
@@ -260,6 +261,22 @@ export async function generateProxy(
   if (!encoder.includes('prores')) {
     args.push('-pix_fmt', 'yuv420p');
   }
+
+  // Keyframe interval for smooth NLE scrubbing (~1 second)
+  const gopSize = Math.round(videoInfo.frameRate);
+  args.push('-g', String(gopSize));
+
+  // VFR to CFR conversion (variable frame rate breaks editing software)
+  args.push('-vsync', 'cfr');
+
+  // Color space tagging for proper display (bt709 for SDR content)
+  if (!videoInfo.isHdr) {
+    args.push('-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709');
+  }
+
+  // Embed source filename for relinking in NLEs
+  const sourceFilename = path.basename(inputPath);
+  args.push('-metadata', `comment=Source: ${sourceFilename}`);
 
   // Audio handling
   if (config.audioCodec === 'none' || !videoInfo.audio) {
@@ -310,6 +327,12 @@ export async function generateProxy(
 
     ffmpeg.on('close', async (code) => {
       if (code !== 0) {
+        // Clean up partial output file on failure
+        try {
+          await fs.unlink(outputPath);
+        } catch {
+          // Ignore cleanup errors
+        }
         reject(new ShoemakerError(
           `FFmpeg encoding failed: ${stderr.slice(-500)}`,
           ErrorCode.DECODE_FAILED,
@@ -345,7 +368,13 @@ export async function generateProxy(
       }
     });
 
-    ffmpeg.on('error', (err) => {
+    ffmpeg.on('error', async (err) => {
+      // Clean up partial output file on spawn failure
+      try {
+        await fs.unlink(outputPath);
+      } catch {
+        // Ignore cleanup errors
+      }
       reject(new ShoemakerError(
         `FFmpeg spawn failed: ${err.message}`,
         ErrorCode.DECODER_NOT_AVAILABLE,

@@ -272,7 +272,7 @@ async function writeErrorLog(
 ): Promise<void> {
   const errorLog = {
     timestamp: new Date().toISOString(),
-    version: '0.1.6',
+    version: '0.1.7',
     basePath,
     batch: {
       total: result.total,

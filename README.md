@@ -2,7 +2,7 @@
 
 > A CLI that makes thumbnails and proxies from images, RAW files, and videos.
 
-**Version:** 0.1.6 | **License:** MIT | **Node.js:** 20+
+**Version:** 0.1.7 | **License:** MIT | **Node.js:** 20+
 
 ## Features
 
