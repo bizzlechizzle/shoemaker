@@ -1,16 +1,19 @@
 # Shoemaker
 
-> A CLI that makes thumbnails from images, RAW files, and videos.
+> A CLI that makes thumbnails and proxies from images, RAW files, and videos.
 
-**Version:** 0.1.5 | **License:** MIT | **Node.js:** 20+
+**Version:** 0.1.6 | **License:** MIT | **Node.js:** 20+
 
 ## Features
 
 - **Fast thumbnail generation** - Extract embedded camera previews for instant thumbnails
 - **RAW file support** - Sony ARW, Canon CR2/CR3, Nikon NEF, Fuji RAF, and more
 - **Video thumbnail support** - Extract poster frames, preview images, and timeline strips
+- **Video proxy generation** - Create lower-resolution video copies for editing workflows
+- **Hardware acceleration** - Auto-detect VideoToolbox (macOS), NVENC, VAAPI, QSV
+- **LUT support** - Apply .cube LUT files for color grading during proxy encoding
 - **Smart fallback** - Automatically decode RAW when previews are insufficient
-- **XMP integration** - Track thumbnail state in XMP sidecars
+- **XMP integration** - Track thumbnail and proxy state in XMP sidecars
 - **Multiple presets** - Fast import, high quality, portable (CI/CD friendly)
 - **Library + CLI** - Use programmatically or from the command line
 
@@ -70,6 +73,11 @@ shoemaker thumb /photos/ --dry-run        # Show what would be done
 shoemaker thumb /photos/ --json           # Output as JSON
 shoemaker thumb /photos/ -c 8             # Use 8 concurrent workers
 shoemaker thumb /photos/ --error-log ./errors.json  # Custom error log path
+
+# Video proxy generation
+shoemaker thumb /videos/ --proxy                   # Generate proxies (default: 720p)
+shoemaker thumb /videos/ --proxy --proxy-size small,medium,large  # All sizes
+shoemaker thumb /videos/ --proxy --lut /path/to/grade.cube  # Apply LUT
 ```
 
 **Options:**
@@ -82,6 +90,9 @@ shoemaker thumb /photos/ --error-log ./errors.json  # Custom error log path
 - `-q, --quiet` - Suppress progress output
 - `--json` - Output results as JSON
 - `--error-log <path>` - Write error log to specified JSON file (default: `.shoemaker-errors.json`)
+- `--proxy` - Generate video proxy files (lower-res copies for editing)
+- `--proxy-size <sizes>` - Proxy sizes to generate: small (540p), medium (720p), large (1080p)
+- `--lut <path>` - Apply .cube LUT file to proxies for color grading
 
 ### `shoemaker info <file>`
 
@@ -272,6 +283,106 @@ Shoemaker uses intelligent frame selection:
 - **Deinterlacing:** Detects and deinterlaces interlaced content (yadif)
 - **HDR tone mapping:** Converts HDR10/HLG to SDR for compatibility
 - **Rotation handling:** Applies rotation metadata automatically
+
+## Video Proxies
+
+Generate lower-resolution video copies for editing workflows. Proxies are essential for editing high-bitrate footage (4K, ProRes, RAW) on less powerful hardware.
+
+### Quick Start
+
+```bash
+# Generate 720p proxy (default)
+shoemaker thumb /videos/footage.mp4 --proxy
+
+# Generate multiple sizes
+shoemaker thumb /videos/ --proxy --proxy-size small,medium,large -r
+
+# Apply a LUT during encoding
+shoemaker thumb /videos/ --proxy --lut /path/to/rec709.cube
+```
+
+### Proxy Sizes
+
+| Size | Resolution | CRF | Use Case |
+|------|------------|-----|----------|
+| **small** | 540p | 28 | Offline edit, rough cuts |
+| **medium** | 720p | 23 | Standard editing (default) |
+| **large** | 1080p | 20 | High-quality preview |
+
+### Hardware Acceleration
+
+Shoemaker auto-detects and uses hardware encoders when available:
+
+| Platform | Encoder | How to Enable |
+|----------|---------|---------------|
+| macOS | VideoToolbox | Automatic (Apple Silicon/Intel) |
+| NVIDIA | NVENC | Install CUDA toolkit |
+| AMD/Intel Linux | VAAPI | Install vaapi drivers |
+| Intel | QuickSync (QSV) | Install Intel Media SDK |
+
+Falls back to software encoding (libx264) if no hardware encoder is available.
+
+### Proxy Configuration
+
+Configure proxy generation in your config file:
+
+```toml
+[video.proxy]
+enabled = false              # Enable via CLI with --proxy
+codec = "h264"               # h264, h265, or prores
+format = "mp4"               # mp4 or mov
+preset = "fast"              # ultrafast to slow
+audioCodec = "aac"           # aac, copy, or none
+audioBitrate = "128k"
+hwAccel = "auto"             # auto, none, videotoolbox, nvenc, vaapi, qsv
+deinterlace = true           # Auto-deinterlace interlaced content
+fastStart = true             # Enable streaming (movflags +faststart)
+lutPath = ""                 # Path to .cube LUT file
+
+[video.proxy.sizes.small]
+height = 540
+crf = 28
+
+[video.proxy.sizes.medium]
+height = 720
+crf = 23
+
+[video.proxy.sizes.large]
+height = 1080
+crf = 20
+```
+
+### Output Structure
+
+Proxies are stored in a `proxies` subdirectory within the thumbnail folder:
+
+```
+/videos/
+|-- DJI_0003.MOV
+|-- DJI_0003.MOV.xmp           # XMP with proxy metadata
++-- DJI_0003_thumbs/
+    |-- DJI_0003_poster_300.webp
+    |-- DJI_0003_preview_1600.webp
+    |-- DJI_0003_timeline.jpg
+    +-- proxies/
+        |-- DJI_0003_proxy_540p.mp4   # 1.9 MB (vs 247 MB original)
+        |-- DJI_0003_proxy_720p.mp4   # 2.1 MB
+        +-- DJI_0003_proxy_1080p.mp4  # 4.2 MB
+```
+
+### LUT Support
+
+Apply color grading during proxy encoding with .cube LUT files:
+
+```bash
+# Apply Rec.709 conversion for LOG footage
+shoemaker thumb /videos/ --proxy --lut /luts/slog3_to_rec709.cube
+
+# Apply creative grade
+shoemaker thumb /videos/ --proxy --lut /luts/cinematic.cube
+```
+
+The LUT is applied after scaling, so you get color-correct proxies ready for editing.
 
 ## Library Usage
 

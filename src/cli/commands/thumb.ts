@@ -59,6 +59,9 @@ export const thumbCommand = new Command('thumb')
   .option('-q, --quiet', 'Suppress progress output', false)
   .option('--json', 'Output results as JSON', false)
   .option('--error-log <path>', 'Write error log to JSON file')
+  .option('--proxy', 'Generate video proxy files (lower-res copies for editing)', false)
+  .option('--proxy-size <sizes>', 'Proxy sizes to generate (small,medium,large)', 'medium')
+  .option('--lut <path>', 'Apply .cube LUT file to proxies for color grading')
   .action(async (inputPath: string, options) => {
     const config = await loadConfig();
     const preset = await loadPreset(options.preset, config);
@@ -67,6 +70,29 @@ export const thumbCommand = new Command('thumb')
     // Validate and override concurrency if specified
     if (options.concurrency) {
       finalConfig.processing.concurrency = validateConcurrency(options.concurrency);
+    }
+
+    // Enable proxy generation if --proxy flag is set
+    if (options.proxy) {
+      finalConfig.video.proxy.enabled = true;
+      // Parse proxy sizes if specified
+      if (options.proxySize) {
+        const requestedSizes = options.proxySize.split(',').map((s: string) => s.trim());
+        const defaultSizes = finalConfig.video.proxy.sizes;
+        const filteredSizes: typeof defaultSizes = {};
+        for (const size of requestedSizes) {
+          if (defaultSizes[size]) {
+            filteredSizes[size] = defaultSizes[size];
+          }
+        }
+        if (Object.keys(filteredSizes).length > 0) {
+          finalConfig.video.proxy.sizes = filteredSizes;
+        }
+      }
+      // Apply LUT if specified
+      if (options.lut) {
+        finalConfig.video.proxy.lutPath = options.lut;
+      }
     }
 
     // Validate input path exists
@@ -246,7 +272,7 @@ async function writeErrorLog(
 ): Promise<void> {
   const errorLog = {
     timestamp: new Date().toISOString(),
-    version: '0.1.2',
+    version: '0.1.6',
     basePath,
     batch: {
       total: result.total,

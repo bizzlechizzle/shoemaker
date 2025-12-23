@@ -121,6 +121,33 @@ export const LoggingConfigSchema = z.object({
   progress: z.boolean().default(true),
 });
 
+// Proxy size configuration for a single proxy tier
+export const ProxySizeConfigSchema = z.object({
+  height: z.number().int().min(240).max(2160),
+  bitrate: z.string().optional(), // e.g., "5M", "2000k" - if omitted, uses CRF
+  crf: z.number().int().min(0).max(51).default(23), // quality-based encoding
+  maxWidth: z.number().int().min(320).max(4096).optional(), // cap width for ultra-wide
+});
+
+// Proxy generation configuration
+export const ProxyConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  sizes: z.record(z.string(), ProxySizeConfigSchema).default({
+    small: { height: 540, crf: 28 },
+    medium: { height: 720, crf: 23 },
+    large: { height: 1080, crf: 20 },
+  }),
+  codec: z.enum(['h264', 'h265', 'prores']).default('h264'),
+  format: z.enum(['mp4', 'mov']).default('mp4'),
+  preset: z.enum(['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow']).default('fast'),
+  audioCodec: z.enum(['aac', 'copy', 'none']).default('aac'),
+  audioBitrate: z.string().default('128k'),
+  hwAccel: z.enum(['auto', 'none', 'videotoolbox', 'nvenc', 'vaapi', 'qsv']).default('auto'),
+  deinterlace: z.boolean().default(true),
+  fastStart: z.boolean().default(true), // movflags +faststart for streaming
+  lutPath: z.string().optional(), // Path to .cube LUT file for color grading
+});
+
 // Video configuration (must be defined before ConfigSchema)
 export const VideoConfigSchema = z.object({
   concurrency: z.number().int().min(1).max(8).default(2),
@@ -132,6 +159,7 @@ export const VideoConfigSchema = z.object({
   autoDeinterlace: z.boolean().default(true),
   autoRotate: z.boolean().default(true),
   hdrToneMap: z.boolean().default(true),
+  proxy: ProxyConfigSchema.default({}),
 });
 
 // Full configuration schema
@@ -195,11 +223,25 @@ export const ThumbnailResultSchema = z.object({
   bytes: z.number(),
 });
 
+// Proxy result (for video proxies)
+export const ProxyResultSchema = z.object({
+  size: z.string(), // 'small', 'medium', 'large'
+  width: z.number(),
+  height: z.number(),
+  codec: z.string(),
+  format: z.string(),
+  path: z.string(),
+  bytes: z.number(),
+  duration: z.number(), // encoding duration in ms
+  bitrate: z.number().optional(), // actual bitrate in kbps
+});
+
 // Generation result
 export const GenerationResultSchema = z.object({
   source: z.string(),
   method: z.enum(['extracted', 'decoded', 'direct', 'video']),
   thumbnails: z.array(ThumbnailResultSchema),
+  proxies: z.array(ProxyResultSchema).optional(),
   warnings: z.array(z.string()).default([]),
   duration: z.number(),
 });
@@ -246,12 +288,15 @@ export type BehaviorConfig = z.infer<typeof BehaviorConfigSchema>;
 export type FileTypesConfig = z.infer<typeof FileTypesConfigSchema>;
 export type XmpConfig = z.infer<typeof XmpConfigSchema>;
 export type LoggingConfig = z.infer<typeof LoggingConfigSchema>;
+export type ProxySizeConfig = z.infer<typeof ProxySizeConfigSchema>;
+export type ProxyConfig = z.infer<typeof ProxyConfigSchema>;
 export type VideoConfig = z.infer<typeof VideoConfigSchema>;
 export type Config = z.infer<typeof ConfigSchema>;
 export type Preset = z.infer<typeof PresetSchema>;
 export type PreviewInfo = z.infer<typeof PreviewInfoSchema>;
 export type PreviewAnalysis = z.infer<typeof PreviewAnalysisSchema>;
 export type ThumbnailResult = z.infer<typeof ThumbnailResultSchema>;
+export type ProxyResult = z.infer<typeof ProxyResultSchema>;
 export type GenerationResult = z.infer<typeof GenerationResultSchema>;
 export type BatchResult = z.infer<typeof BatchResultSchema>;
 export type VideoInfo = z.infer<typeof VideoInfoSchema>;

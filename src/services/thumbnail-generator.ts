@@ -8,7 +8,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import PQueue from 'p-queue';
-import type { Config, Preset, GenerationResult, BatchResult, ThumbnailResult } from '../schemas/index.js';
+import type { Config, Preset, GenerationResult, BatchResult, ThumbnailResult, ProxyResult } from '../schemas/index.js';
 import { VIDEO_EXTENSIONS } from '../schemas/index.js';
 import { analyzeEmbeddedPreviews, extractBestPreview, isRawFormat, isDecodedFormat, isVideoFormat } from '../core/extractor.js';
 import { generateThumbnails as resizeThumbnails, generateThumbnail } from '../core/resizer.js';
@@ -18,6 +18,7 @@ import { decodeRawFile as decodeRaw, type DecodeOptions } from '../core/decoder.
 import { updateXmpSidecar, hasExistingThumbnails } from './xmp-updater.js';
 import { probeVideo, checkFfprobeAvailable } from '../core/ffprobe.js';
 import { extractPosterFrame, extractPreviewFrame, generateTimelineStrip } from '../core/frame-extractor.js';
+import { generateProxies } from '../core/proxy-generator.js';
 
 export interface GenerateOptions {
   config: Config;
@@ -140,12 +141,31 @@ async function generateVideoThumbnails(
     bytes: timelineStats.size,
   });
 
+  // Generate proxies if enabled
+  let proxies: ProxyResult[] | undefined;
+  if (videoConfig.proxy.enabled) {
+    try {
+      proxies = await generateProxies(filePath, {
+        config: videoConfig.proxy,
+        videoInfo,
+        outputDir,
+        stem,
+      });
+      if (proxies.length > 0) {
+        warnings.push(`Generated ${proxies.length} proxy file(s)`);
+      }
+    } catch (err) {
+      warnings.push(`Proxy generation failed: ${(err as Error).message}`);
+    }
+  }
+
   // Update XMP sidecar with video metadata
   if (config.xmp.updateSidecars) {
     await updateXmpSidecar(filePath, {
       thumbnails,
       method: 'video',
       videoInfo,
+      proxies,
     });
   }
 
@@ -153,6 +173,7 @@ async function generateVideoThumbnails(
     source: filePath,
     method: 'video',
     thumbnails,
+    proxies,
     warnings,
     duration: Date.now() - startTime,
   };

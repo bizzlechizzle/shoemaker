@@ -8,13 +8,14 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { exiftool } from 'exiftool-vendored';
-import type { ThumbnailResult, VideoInfo } from '../schemas/index.js';
+import type { ThumbnailResult, VideoInfo, ProxyResult } from '../schemas/index.js';
 import { wrapError } from '../core/errors.js';
 
 export interface XmpUpdateData {
   thumbnails: ThumbnailResult[];
   method: 'extracted' | 'decoded' | 'direct' | 'video';
   videoInfo?: VideoInfo;
+  proxies?: ProxyResult[];
 }
 
 /**
@@ -66,6 +67,19 @@ export async function updateXmpSidecar(
         rotation: data.videoInfo.rotation,
         audio: data.videoInfo.audio,
       };
+    }
+
+    // Add proxy metadata if present
+    if (data.proxies && data.proxies.length > 0) {
+      metadata.proxies = data.proxies.map(p => ({
+        size: p.size,
+        resolution: `${p.width}x${p.height}`,
+        codec: p.codec,
+        format: p.format,
+        path: path.basename(p.path),
+        bytes: p.bytes,
+        bitrate: p.bitrate,
+      }));
     }
 
     await exiftool.write(xmpPath, {}, [
