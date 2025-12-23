@@ -1,6 +1,6 @@
 {
   "name": "shoemaker",
-  "version": "0.2.0",
+  "version": "0.1.2",
   "description": "A CLI that makes thumbnails from images and RAW files",
   "type": "module",
   "main": "dist/index.js",
