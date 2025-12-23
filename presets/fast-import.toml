@@ -23,4 +23,4 @@ fallback_to_raw = false
 use_largest_available = true
 skip_if_insufficient = false
 decoder = "embedded"
-fallback_decoder = "libraw"
+fallback_decoder = "dcraw"

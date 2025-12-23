@@ -22,5 +22,5 @@ quality = 90
 fallback_to_raw = true
 use_largest_available = true
 skip_if_insufficient = false
-decoder = "libraw"
-fallback_decoder = "embedded"
+decoder = "dcraw"
+fallback_decoder = "sharp"

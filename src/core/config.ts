@@ -16,6 +16,7 @@ import { ShoemakerError, ErrorCode } from './errors.js';
 const DEFAULT_CONFIG: Config = ConfigSchema.parse({});
 
 // Built-in presets
+// Note: 'libraw' is mentioned in docs but not implemented - use 'dcraw' or 'sharp' instead
 const BUILTIN_PRESETS: Record<string, Preset> = {
   fast: {
     behavior: {
@@ -23,7 +24,7 @@ const BUILTIN_PRESETS: Record<string, Preset> = {
       useLargestAvailable: true,
       skipIfInsufficient: false,
       decoder: 'embedded',
-      fallbackDecoder: 'libraw',
+      fallbackDecoder: 'dcraw',
     },
   },
   quality: {
@@ -32,7 +33,7 @@ const BUILTIN_PRESETS: Record<string, Preset> = {
       useLargestAvailable: false,
       skipIfInsufficient: true,
       decoder: 'rawtherapee',
-      fallbackDecoder: 'darktable',
+      fallbackDecoder: 'dcraw',
     },
   },
   portable: {
@@ -40,8 +41,8 @@ const BUILTIN_PRESETS: Record<string, Preset> = {
       fallbackToRaw: true,
       useLargestAvailable: true,
       skipIfInsufficient: false,
-      decoder: 'libraw',
-      fallbackDecoder: 'embedded',
+      decoder: 'dcraw',
+      fallbackDecoder: 'sharp',
     },
   },
 };

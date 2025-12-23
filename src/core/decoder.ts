@@ -330,22 +330,28 @@ async function decodeWithDarktable(filePath: string, options: DecodeOptions): Pr
 
 /**
  * Decode using dcraw (basic, fast)
- * dcraw outputs PPM, which we convert to JPEG via sharp
+ * Uses TIFF output for sharp compatibility since sharp doesn't support PPM.
  */
 async function decodeWithDcraw(filePath: string, options: DecodeOptions): Promise<Buffer> {
+  const tmpDir = os.tmpdir();
+  const uniqueId = crypto.randomBytes(8).toString('hex');
+  const tmpInputPath = path.join(tmpDir, `shoemaker-${uniqueId}${path.extname(filePath)}`);
+  const tmpOutputPath = tmpInputPath.replace(/\.[^.]+$/, '.tiff');
+
   try {
-    // dcraw -c outputs to stdout as PPM
+    // Copy input file to temp directory (dcraw writes output next to input)
+    await fs.copyFile(filePath, tmpInputPath);
+
+    // dcraw -T outputs TIFF file (same name, .tiff extension)
     // -w: use camera white balance
     // -W: don't automatically brighten
     // -q 3: high-quality interpolation
-    const { stdout } = await execFileAsync('dcraw', ['-c', '-w', '-W', '-q', '3', filePath], {
-      maxBuffer: 100 * 1024 * 1024, // 100MB buffer for large images
-      encoding: 'buffer',
-      timeout: 60000, // 1 minute timeout
+    await execFileAsync('dcraw', ['-T', '-w', '-W', '-q', '3', tmpInputPath], {
+      timeout: 120000, // 2 minute timeout for large files
     });
 
-    // Convert PPM to JPEG using sharp
-    let image = sharp(stdout);
+    // Read the TIFF output
+    let image = sharp(tmpOutputPath);
 
     // Apply target width if specified
     if (options.targetWidth) {
@@ -365,6 +371,14 @@ async function decodeWithDcraw(filePath: string, options: DecodeOptions): Promis
       ErrorCode.DECODE_FAILED,
       filePath
     );
+  } finally {
+    // Clean up temp files
+    try {
+      await fs.unlink(tmpInputPath);
+    } catch { /* ignore */ }
+    try {
+      await fs.unlink(tmpOutputPath);
+    } catch { /* ignore */ }
   }
 }
 

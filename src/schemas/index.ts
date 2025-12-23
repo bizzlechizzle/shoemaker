@@ -92,8 +92,8 @@ export const BehaviorConfigSchema = z.object({
   fallbackToRaw: z.boolean().default(false),
   useLargestAvailable: z.boolean().default(true),
   skipIfInsufficient: z.boolean().default(false),
-  decoder: z.enum(['embedded', 'libraw', 'rawtherapee', 'darktable', 'dcraw', 'vips']).optional(),
-  fallbackDecoder: z.enum(['embedded', 'libraw', 'rawtherapee', 'darktable', 'dcraw', 'vips']).optional(),
+  decoder: z.enum(['embedded', 'sharp', 'libraw', 'rawtherapee', 'darktable', 'dcraw', 'vips']).optional(),
+  fallbackDecoder: z.enum(['embedded', 'sharp', 'libraw', 'rawtherapee', 'darktable', 'dcraw', 'vips']).optional(),
   profile: z.string().optional(),
 });
 
