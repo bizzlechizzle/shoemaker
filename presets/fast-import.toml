@@ -1,0 +1,26 @@
+# Fast Import Preset
+#
+# Extract embedded previews only, no RAW decode.
+# Best for: Quick imports, initial triage, when time matters more than quality.
+
+[sizes.thumb]
+width = 300
+format = "webp"
+quality = 80
+
+[sizes.preview]
+width = 1600
+format = "webp"
+quality = 85
+
+[sizes.ml]
+width = 2560
+format = "jpeg"
+quality = 90
+
+[behavior]
+fallback_to_raw = false
+use_largest_available = true
+skip_if_insufficient = false
+decoder = "embedded"
+fallback_decoder = "libraw"

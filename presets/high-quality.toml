@@ -1,0 +1,26 @@
+# High Quality Preset
+#
+# Always decode RAW for best results using RawTherapee or darktable.
+# Best for: Final archives, when quality matters, smaller batches.
+
+[sizes.thumb]
+width = 300
+format = "webp"
+quality = 85
+
+[sizes.preview]
+width = 1600
+format = "webp"
+quality = 90
+
+[sizes.ml]
+width = 2560
+format = "jpeg"
+quality = 95
+
+[behavior]
+fallback_to_raw = true
+use_largest_available = false
+skip_if_insufficient = true
+decoder = "rawtherapee"
+fallback_decoder = "darktable"

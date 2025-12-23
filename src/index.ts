@@ -1,0 +1,122 @@
+/**
+ * Shoemaker - A Library That Makes Thumbnails
+ *
+ * This is the library entry point for programmatic use.
+ * Import this module to use Shoemaker in your own applications.
+ *
+ * @example
+ * ```typescript
+ * import { generateThumbnails, loadConfig, loadPreset } from 'shoemaker';
+ *
+ * const config = await loadConfig();
+ * const preset = await loadPreset('fast');
+ *
+ * const result = await generateThumbnails('/path/to/image.arw', {
+ *   config,
+ *   preset,
+ * });
+ * ```
+ */
+
+// Core modules
+export {
+  analyzeEmbeddedPreviews,
+  extractBestPreview,
+  extractPreviewBuffer,
+  isRawFormat,
+  isDecodedFormat,
+  shutdownExiftool,
+} from './core/extractor.js';
+
+export {
+  resizeImage,
+  generateThumbnail,
+  generateThumbnails as resizeThumbnails,
+  getImageMetadata,
+  getSharpCapabilities,
+  type ResizeOptions,
+  type ResizeResult,
+} from './core/resizer.js';
+
+export {
+  loadConfig,
+  loadPreset,
+  applyPreset,
+  getBehavior,
+  expandPath,
+  getConfigPaths,
+} from './core/config.js';
+
+export {
+  ShoemakerError,
+  ErrorCode,
+  wrapError,
+  isRecoverable,
+  shouldStopBatch,
+  shouldReduceConcurrency,
+} from './core/errors.js';
+
+// Services
+export {
+  generateForFile,
+  generateForBatch,
+  findImageFiles,
+  type GenerateOptions,
+  type ProgressInfo,
+} from './services/thumbnail-generator.js';
+
+export {
+  updateXmpSidecar,
+  hasExistingThumbnails,
+  readThumbnailInfo,
+  clearThumbnailInfo,
+  getXmpPath,
+  xmpExists,
+  type XmpUpdateData,
+} from './services/xmp-updater.js';
+
+// Schemas and types
+export {
+  ConfigSchema,
+  PresetSchema,
+  PreviewAnalysisSchema,
+  GenerationResultSchema,
+  BatchResultSchema,
+  type Config,
+  type Preset,
+  type SizeConfig,
+  type BehaviorConfig,
+  type PreviewAnalysis,
+  type PreviewInfo,
+  type ThumbnailResult,
+  type GenerationResult,
+  type BatchResult,
+} from './schemas/index.js';
+
+// Re-export types for convenience function
+import type { ProgressInfo } from './services/thumbnail-generator.js';
+import type { GenerationResult } from './schemas/index.js';
+
+// Convenience function for simple use cases
+export async function generateThumbnails(
+  inputPath: string,
+  options?: {
+    preset?: string;
+    force?: boolean;
+    onProgress?: (info: ProgressInfo) => void;
+  }
+): Promise<GenerationResult> {
+  const { loadConfig, loadPreset, applyPreset } = await import('./core/config.js');
+  const { generateForFile } = await import('./services/thumbnail-generator.js');
+
+  const config = await loadConfig();
+  const preset = await loadPreset(options?.preset ?? 'fast', config);
+  const finalConfig = applyPreset(config, preset);
+
+  return generateForFile(inputPath, {
+    config: finalConfig,
+    preset,
+    force: options?.force,
+    onProgress: options?.onProgress,
+  });
+}
