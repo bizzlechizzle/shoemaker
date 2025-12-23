@@ -96,6 +96,7 @@ npm start -- doctor
 | **Resizer** | `src/core/resizer.ts` | Resize images via Sharp, convert to sRGB |
 | **FFprobe** | `src/core/ffprobe.ts` | Video metadata extraction |
 | **Frame Extractor** | `src/core/frame-extractor.ts` | Video frame extraction, timeline strips |
+| **Proxy Generator** | `src/core/proxy-generator.ts` | Video proxy encoding with HW acceleration |
 | **Config** | `src/core/config.ts` | Load TOML config and presets |
 | **Errors** | `src/core/errors.ts` | Error classes and recovery logic |
 | **Generator** | `src/services/thumbnail-generator.ts` | Main pipeline orchestration (images + video) |
@@ -262,6 +263,7 @@ try {
 | `NO_PREVIEW` | No embedded preview | Yes |
 | `DECODE_FAILED` | Decoding error | Yes |
 | `DECODER_NOT_AVAILABLE` | Tool not installed | No |
+| `INVALID_PATH` | Path validation failed | No |
 
 ## Building and Releasing
 
@@ -374,6 +376,39 @@ Key features:
 - Automatic deinterlacing (yadif filter)
 - HDR to SDR tone mapping (Hable algorithm)
 - Rotation handling
+
+### core/proxy-generator.ts
+
+Video proxy encoding with hardware acceleration:
+
+| HW Accel | Encoder | Platform |
+|----------|---------|----------|
+| VideoToolbox | `h264_videotoolbox` | macOS |
+| NVENC | `h264_nvenc` | NVIDIA |
+| VAAPI | `h264_vaapi` | AMD/Intel Linux |
+| QSV | `h264_qsv` | Intel |
+| Software | `libx264` | Any (fallback) |
+
+Key functions:
+- `detectAvailableEncoders()` - Probe FFmpeg for available encoders
+- `selectEncoder(codec, hwAccel)` - Choose best encoder for config
+- `generateProxy(input, output, size, config)` - Encode single proxy
+- `generateProxies(input, options)` - Encode all configured sizes
+- `buildFilterChain(videoInfo, height, config)` - Build FFmpeg filters
+
+Features:
+- Hardware encoder auto-detection with software fallback
+- LUT color grading via `lut3d` filter
+- HDR to SDR tone mapping
+- Deinterlacing for interlaced sources
+- Rotation handling (90°/270° dimension swap)
+- NLE-friendly encoding (1-second keyframes, VFR→CFR, bt709 tagging)
+- Progress tracking via FFmpeg stderr parsing
+- Partial file cleanup on failure
+
+Security:
+- LUT paths validated (.cube extension, file exists)
+- Path escaping for FFmpeg filter syntax
 
 ### core/decoder.ts
 

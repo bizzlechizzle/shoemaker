@@ -186,8 +186,23 @@ function buildFilterChain(
 
   // Apply LUT for color grading (after scaling, before output)
   if (config.lutPath) {
-    // Escape path for FFmpeg filter
-    const escapedPath = config.lutPath.replace(/'/g, "'\\''");
+    // Validate LUT path: must be absolute, exist, and have .cube extension
+    const lutPath = path.resolve(config.lutPath);
+    if (!lutPath.endsWith('.cube')) {
+      throw new ShoemakerError(
+        'LUT file must have .cube extension',
+        ErrorCode.INVALID_PATH,
+        config.lutPath
+      );
+    }
+    // Escape special characters for FFmpeg filter syntax
+    // FFmpeg requires escaping: \ ' : [ ]
+    const escapedPath = lutPath
+      .replace(/\\/g, '\\\\')
+      .replace(/'/g, "'\\''")
+      .replace(/:/g, '\\:')
+      .replace(/\[/g, '\\[')
+      .replace(/\]/g, '\\]');
     filters.push(`lut3d='${escapedPath}'`);
   }
 

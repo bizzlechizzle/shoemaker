@@ -179,7 +179,13 @@ describe('Video Schemas', () => {
       const result = VideoConfigSchema.safeParse(customConfig);
       expect(result.success).toBe(true);
       if (result.success) {
-        expect(result.data).toEqual(customConfig);
+        // Check core values match (proxy gets default values)
+        expect(result.data.concurrency).toEqual(customConfig.concurrency);
+        expect(result.data.posterPosition).toEqual(customConfig.posterPosition);
+        expect(result.data.previewPosition).toEqual(customConfig.previewPosition);
+        expect(result.data.timelineFrames).toEqual(customConfig.timelineFrames);
+        expect(result.data.proxy).toBeDefined();
+        expect(result.data.proxy.enabled).toBe(false);
       }
     });
 

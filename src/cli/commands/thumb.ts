@@ -77,21 +77,44 @@ export const thumbCommand = new Command('thumb')
       finalConfig.video.proxy.enabled = true;
       // Parse proxy sizes if specified
       if (options.proxySize) {
-        const requestedSizes = options.proxySize.split(',').map((s: string) => s.trim());
+        const requestedSizes = options.proxySize.split(',').map((s: string) => s.trim()).filter(Boolean);
         const defaultSizes = finalConfig.video.proxy.sizes;
+        const validSizes = Object.keys(defaultSizes);
         const filteredSizes: typeof defaultSizes = {};
+        const invalidSizes: string[] = [];
+
         for (const size of requestedSizes) {
           if (defaultSizes[size]) {
             filteredSizes[size] = defaultSizes[size];
+          } else {
+            invalidSizes.push(size);
           }
         }
+
+        if (invalidSizes.length > 0) {
+          console.error(`Error: Invalid proxy size(s): ${invalidSizes.join(', ')}`);
+          console.error(`Valid sizes are: ${validSizes.join(', ')}`);
+          process.exit(1);
+        }
+
         if (Object.keys(filteredSizes).length > 0) {
           finalConfig.video.proxy.sizes = filteredSizes;
         }
       }
-      // Apply LUT if specified
+      // Apply LUT if specified - validate path exists and has correct extension
       if (options.lut) {
-        finalConfig.video.proxy.lutPath = options.lut;
+        const lutPath = path.resolve(options.lut);
+        if (!lutPath.endsWith('.cube')) {
+          console.error('Error: LUT file must have .cube extension');
+          process.exit(1);
+        }
+        try {
+          await fs.access(lutPath);
+        } catch {
+          console.error(`Error: LUT file not found: ${lutPath}`);
+          process.exit(1);
+        }
+        finalConfig.video.proxy.lutPath = lutPath;
       }
     }
 
@@ -272,7 +295,7 @@ async function writeErrorLog(
 ): Promise<void> {
   const errorLog = {
     timestamp: new Date().toISOString(),
-    version: '0.1.7',
+    version: '0.1.8',
     basePath,
     batch: {
       total: result.total,

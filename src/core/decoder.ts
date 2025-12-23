@@ -255,9 +255,28 @@ async function decodeWithRawTherapee(filePath: string, options: DecodeOptions): 
       '-c', // Use camera profiles
     ];
 
-    // Add processing profile if specified
+    // Add processing profile if specified - validate path first
     if (options.profile) {
-      args.push('-p', options.profile);
+      const profilePath = path.resolve(options.profile);
+      // Validate profile has correct extension (.pp3 for RawTherapee)
+      if (!profilePath.endsWith('.pp3')) {
+        throw new ShoemakerError(
+          'RawTherapee profile must have .pp3 extension',
+          ErrorCode.INVALID_PATH,
+          options.profile
+        );
+      }
+      // Verify file exists
+      try {
+        await fs.access(profilePath);
+      } catch {
+        throw new ShoemakerError(
+          `Profile file not found: ${profilePath}`,
+          ErrorCode.INVALID_PATH,
+          options.profile
+        );
+      }
+      args.push('-p', profilePath);
     }
 
     args.push(filePath);
