@@ -11,6 +11,7 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import { getSharpCapabilities } from '../../core/resizer.js';
+import { checkFfprobeAvailable, getFfprobeVersion, checkFfmpegAvailable, getFfmpegVersion } from '../../core/ffprobe.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -31,6 +32,7 @@ export const doctorCommand = new Command('doctor')
 
     const decoders = await checkDecoders();
     const metadata = await checkMetadataTools();
+    const videoTools = await checkVideoTools();
     const sharp = getSharpCapabilities();
 
     if (options.json) {
@@ -38,6 +40,7 @@ export const doctorCommand = new Command('doctor')
         version: pkg.version,
         decoders,
         metadata,
+        videoTools,
         sharp,
       }, null, 2));
       return;
@@ -50,6 +53,11 @@ export const doctorCommand = new Command('doctor')
     printToolStatus('  libraw', { name: 'libraw', available: true, version: 'WASM (bundled)' });
     for (const decoder of decoders) {
       printToolStatus(`  ${decoder.name}`, decoder);
+    }
+
+    console.log('\nVideo Tools:');
+    for (const tool of videoTools) {
+      printToolStatus(`  ${tool.name}`, tool);
     }
 
     console.log('\nMetadata Tools:');
@@ -71,6 +79,15 @@ export const doctorCommand = new Command('doctor')
       console.log('  ✓ AVIF              Encode/Decode');
     } else {
       console.log('  ✗ AVIF              Not available');
+    }
+
+    // Video support status
+    const hasVideo = videoTools.every(t => t.available);
+    console.log('\nVideo Support:');
+    if (hasVideo) {
+      console.log('  ✓ Video thumbnailing enabled (FFmpeg + FFprobe available)');
+    } else {
+      console.log('  ✗ Video thumbnailing disabled (install FFmpeg to enable)');
     }
 
     // Recommendations
@@ -175,6 +192,30 @@ async function checkMetadataTools(): Promise<ToolInfo[]> {
       });
     }
   }
+
+  return results;
+}
+
+async function checkVideoTools(): Promise<ToolInfo[]> {
+  const results: ToolInfo[] = [];
+
+  // Check FFmpeg
+  const ffmpegAvailable = await checkFfmpegAvailable();
+  const ffmpegVersion = ffmpegAvailable ? await getFfmpegVersion() : null;
+  results.push({
+    name: 'ffmpeg',
+    available: ffmpegAvailable,
+    version: ffmpegVersion ?? undefined,
+  });
+
+  // Check FFprobe
+  const ffprobeAvailable = await checkFfprobeAvailable();
+  const ffprobeVersion = ffprobeAvailable ? await getFfprobeVersion() : null;
+  results.push({
+    name: 'ffprobe',
+    available: ffprobeAvailable,
+    version: ffprobeVersion ?? undefined,
+  });
 
   return results;
 }

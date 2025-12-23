@@ -43,6 +43,16 @@ export const DECODED_EXTENSIONS = [
   'jpg', 'jpeg', 'png', 'tif', 'tiff', 'webp', 'avif', 'heic', 'heif',
 ] as const;
 
+/** Video file extensions */
+export const VIDEO_EXTENSIONS = [
+  // Common formats
+  'mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'flv', 'm4v',
+  // Professional formats
+  'mxf', 'mts', 'm2ts', 'mpg', 'mpeg', 'vob', 'dv',
+  // Camera-specific formats
+  'tod', 'mod', '3gp', 'r3d', 'braw',
+] as const;
+
 /** Allowed RAW decoder commands (security whitelist) */
 export const ALLOWED_DECODER_COMMANDS = [
   'rawtherapee-cli', 'darktable-cli', 'dcraw',
@@ -111,6 +121,19 @@ export const LoggingConfigSchema = z.object({
   progress: z.boolean().default(true),
 });
 
+// Video configuration (must be defined before ConfigSchema)
+export const VideoConfigSchema = z.object({
+  concurrency: z.number().int().min(1).max(8).default(2),
+  posterPosition: z.number().min(0).max(100).default(25),
+  previewPosition: z.number().min(0).max(100).default(50),
+  timelineFrames: z.number().int().min(4).max(20).default(8),
+  timelineHeight: z.number().int().min(40).max(200).default(90),
+  skipBlackFrames: z.boolean().default(true),
+  autoDeinterlace: z.boolean().default(true),
+  autoRotate: z.boolean().default(true),
+  hdrToneMap: z.boolean().default(true),
+});
+
 // Full configuration schema
 export const ConfigSchema = z.object({
   defaultPreset: z.string().default('fast'),
@@ -125,6 +148,7 @@ export const ConfigSchema = z.object({
   filetypes: FileTypesConfigSchema.default({}),
   xmp: XmpConfigSchema.default({}),
   logging: LoggingConfigSchema.default({}),
+  video: VideoConfigSchema.default({}),
 });
 
 // Preset schema (subset of config with behavior)
@@ -174,10 +198,29 @@ export const ThumbnailResultSchema = z.object({
 // Generation result
 export const GenerationResultSchema = z.object({
   source: z.string(),
-  method: z.enum(['extracted', 'decoded', 'direct']),
+  method: z.enum(['extracted', 'decoded', 'direct', 'video']),
   thumbnails: z.array(ThumbnailResultSchema),
   warnings: z.array(z.string()).default([]),
   duration: z.number(),
+});
+
+// Video info from FFprobe
+export const VideoInfoSchema = z.object({
+  duration: z.number(),
+  width: z.number(),
+  height: z.number(),
+  frameRate: z.number(),
+  codec: z.string(),
+  bitrate: z.number().optional(),
+  rotation: z.number().optional(),
+  isInterlaced: z.boolean().optional(),
+  isHdr: z.boolean().optional(),
+  creationTime: z.string().optional(),
+  audio: z.object({
+    codec: z.string(),
+    channels: z.number(),
+    sampleRate: z.number(),
+  }).optional(),
 });
 
 // Batch result
@@ -203,6 +246,7 @@ export type BehaviorConfig = z.infer<typeof BehaviorConfigSchema>;
 export type FileTypesConfig = z.infer<typeof FileTypesConfigSchema>;
 export type XmpConfig = z.infer<typeof XmpConfigSchema>;
 export type LoggingConfig = z.infer<typeof LoggingConfigSchema>;
+export type VideoConfig = z.infer<typeof VideoConfigSchema>;
 export type Config = z.infer<typeof ConfigSchema>;
 export type Preset = z.infer<typeof PresetSchema>;
 export type PreviewInfo = z.infer<typeof PreviewInfoSchema>;
@@ -210,3 +254,4 @@ export type PreviewAnalysis = z.infer<typeof PreviewAnalysisSchema>;
 export type ThumbnailResult = z.infer<typeof ThumbnailResultSchema>;
 export type GenerationResult = z.infer<typeof GenerationResultSchema>;
 export type BatchResult = z.infer<typeof BatchResultSchema>;
+export type VideoInfo = z.infer<typeof VideoInfoSchema>;

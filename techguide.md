@@ -22,37 +22,50 @@ npm run lint:fix     # Auto-fix lint errors
 # CLI (after build)
 npm start            # Run CLI
 node dist/bin/shoemaker.js thumb /path/to/images
+node dist/bin/shoemaker.js info /path/to/video.mp4
 ```
 
 ## Project Structure
 
 ```
 shoemaker/
-├── src/
-│   ├── index.ts              # Library entry point (exports)
-│   ├── bin/
-│   │   └── shoemaker.ts      # CLI entry point
-│   ├── cli/
-│   │   ├── index.ts          # CLI setup (Commander.js)
-│   │   └── commands/         # CLI command implementations
-│   ├── core/
-│   │   ├── config.ts         # Configuration loading (TOML)
-│   │   ├── errors.ts         # Error classes and handling
-│   │   ├── extractor.ts      # ExifTool preview extraction
-│   │   └── resizer.ts        # Sharp resize + color management
-│   ├── services/
-│   │   ├── thumbnail-generator.ts  # Main pipeline
-│   │   └── xmp-updater.ts    # XMP sidecar updates
-│   └── schemas/
-│       └── index.ts          # Zod schemas
-├── presets/                  # TOML preset files
-├── tests/
-│   ├── unit/                 # Unit tests
-│   └── integration/          # Integration tests
-├── sme/                      # SME documentation
-├── package.json
-├── tsconfig.json
-└── vitest.config.ts
+|-- src/
+|   |-- index.ts              # Library entry point (exports)
+|   |-- bin/
+|   |   +-- shoemaker.ts      # CLI entry point
+|   |-- cli/
+|   |   |-- index.ts          # CLI setup (Commander.js)
+|   |   +-- commands/         # CLI command implementations
+|   |       |-- thumb.ts      # Thumbnail generation command
+|   |       |-- info.ts       # File info command (images + video)
+|   |       |-- status.ts     # Status check command
+|   |       |-- clean.ts      # Cleanup command
+|   |       +-- doctor.ts     # System check command
+|   |-- core/
+|   |   |-- config.ts         # Configuration loading (TOML)
+|   |   |-- errors.ts         # Error classes and handling
+|   |   |-- extractor.ts      # ExifTool preview extraction
+|   |   |-- resizer.ts        # Sharp resize + color management
+|   |   |-- decoder.ts        # RAW decoding (libraw, rawtherapee, etc.)
+|   |   |-- ffprobe.ts        # Video metadata extraction (FFprobe)
+|   |   +-- frame-extractor.ts # Video frame extraction (FFmpeg)
+|   |-- services/
+|   |   |-- thumbnail-generator.ts  # Main pipeline (images + video)
+|   |   +-- xmp-updater.ts    # XMP sidecar updates
+|   +-- schemas/
+|       +-- index.ts          # Zod schemas (Config, VideoInfo, etc.)
+|-- presets/                  # TOML preset files
+|-- tests/
+|   |-- unit/                 # Unit tests
+|   |   |-- ffprobe.test.ts   # Video format & schema tests
+|   |   +-- ...
+|   +-- integration/          # Integration tests
+|       |-- video.test.ts     # Video pipeline tests
+|       +-- ...
+|-- sme/                      # SME documentation
+|-- package.json
+|-- tsconfig.json
++-- vitest.config.ts
 ```
 
 ## Architecture
@@ -61,34 +74,75 @@ shoemaker/
 
 ```
 Input File
-    │
-    ├─ isDecodedFormat? ──→ Read directly
-    │
-    └─ isRawFormat? ──→ analyzeEmbeddedPreviews()
-                            │
-                            ├─ bestPreview >= minSize? ──→ extractBestPreview()
-                            │
-                            └─ fallbackToRaw? ──→ decodeRawFile()
-                                                        │
-                                                        └─ source buffer
-                                                              │
-                                                              ▼
-                                                    resizeThumbnails()
-                                                              │
-                                                              ▼
-                                                    updateXmpSidecar()
+    |
+    +-- isVideoFormat? -----> Video Pipeline
+    |                              |
+    |                              +-- probeVideo()
+    |                              |       |
+    |                              |       v
+    |                              +-- extractPosterFrame()
+    |                              +-- extractPreviewFrame()
+    |                              +-- generateTimelineStrip()
+    |                              |       |
+    |                              |       v
+    |                              +-- resizeThumbnails()
+    |                              |       |
+    |                              |       v
+    |                              +-- updateXmpSidecar()
+    |
+    +-- isDecodedFormat? ---> Read directly
+    |
+    +-- isRawFormat? -------> analyzeEmbeddedPreviews()
+                                   |
+                                   +-- bestPreview >= minSize? --> extractBestPreview()
+                                   |
+                                   +-- fallbackToRaw? -----------> decodeRawFile()
+                                                                        |
+                                                                        v
+                                                              resizeThumbnails()
+                                                                        |
+                                                                        v
+                                                              updateXmpSidecar()
 ```
 
 ### Key Modules
 
 | Module | Purpose |
 |--------|---------|
-| `extractor.ts` | ExifTool wrapper for preview extraction |
+| `extractor.ts` | ExifTool wrapper for preview extraction + isVideoFormat() |
 | `resizer.ts` | Sharp wrapper for resize + sRGB conversion |
 | `config.ts` | TOML config loading and preset management |
 | `errors.ts` | Error classes with recovery strategies |
-| `thumbnail-generator.ts` | Main orchestration service |
+| `decoder.ts` | RAW decoding with multiple backend support |
+| `ffprobe.ts` | Video metadata extraction (duration, codec, etc.) |
+| `frame-extractor.ts` | FFmpeg frame extraction (poster, preview, timeline) |
+| `thumbnail-generator.ts` | Main orchestration service (images + video) |
 | `xmp-updater.ts` | XMP sidecar read/write |
+
+### Video Pipeline Details
+
+The video pipeline uses FFmpeg for frame extraction:
+
+1. **Probe**: `ffprobe` extracts video metadata (duration, resolution, codec, etc.)
+2. **Filter Chain**: Builds FFmpeg filter chain based on video properties:
+   - `yadif` for deinterlacing (if interlaced)
+   - `zscale + tonemap` for HDR to SDR conversion
+   - Auto-rotation based on metadata
+3. **Frame Extraction**: Extracts frames at calculated positions
+   - Positions calculated as percentage of safe zone (5%-95%)
+   - Black frames detected and skipped automatically
+4. **Timeline Strip**: Multiple frames composited horizontally using Sharp
+
+```typescript
+// Frame extraction with filter chain
+const filterChain = buildFilterChain(videoInfo, options);
+// -> 'yadif=mode=0,zscale=t=linear:npl=100,format=gbrpf32le,...'
+
+// Safe zone calculation
+const safeStart = duration * 0.05;
+const safeEnd = duration * 0.95;
+const seekTime = safeStart + (safeRange * percentage);
+```
 
 ## Gotchas
 
@@ -113,6 +167,26 @@ Sharp streams images and doesn't load full files into memory, but be careful wit
 - Peak memory ~200-300MB per 50MP image
 
 Reduce concurrency if you hit OOM errors.
+
+### FFmpeg Timeout
+
+FFmpeg operations have a 30-second timeout. For very long videos, frame extraction may need longer:
+
+```typescript
+await execFileAsync('ffmpeg', args, {
+  timeout: 30000,  // 30 seconds
+  maxBuffer: 50 * 1024 * 1024,  // 50MB buffer
+});
+```
+
+### Video Concurrency
+
+Video processing is CPU-intensive. Default concurrency for videos is 2 (vs 4 for images):
+
+```toml
+[video]
+concurrency = 2  # Lower than image processing
+```
 
 ### HEIC on Linux
 
@@ -140,6 +214,14 @@ const buffer = await exiftool.extractBinaryTag('JpgFromRaw', file);
 
 All outputs are converted to sRGB with embedded ICC profile. This ensures consistency but may lose wide-gamut colors from Adobe RGB or ProPhoto RGB sources.
 
+### HDR Video
+
+HDR videos (HDR10, HLG) are automatically tone-mapped to SDR for compatibility. The tone mapping uses the Hable algorithm which preserves highlight detail.
+
+### Interlaced Video
+
+Interlaced content is automatically detected via `field_order` metadata and deinterlaced using the `yadif` filter. Field order values `tt`, `bb`, `tb`, `bt` indicate interlacing.
+
 ## Testing
 
 ### Unit Tests
@@ -147,14 +229,13 @@ All outputs are converted to sRGB with embedded ICC profile. This ensures consis
 Test individual functions in isolation:
 
 ```typescript
-// tests/unit/extractor.test.ts
-import { isRawFormat, isDecodedFormat } from '../../src/core/extractor';
+// tests/unit/ffprobe.test.ts
+import { isVideoFormat } from '../../src/core/extractor';
 
-describe('extractor', () => {
-  it('identifies RAW formats', () => {
-    expect(isRawFormat('image.arw')).toBe(true);
-    expect(isRawFormat('image.ARW')).toBe(true);
-    expect(isRawFormat('image.jpg')).toBe(false);
+describe('video detection', () => {
+  it('identifies video formats', () => {
+    expect(isVideoFormat('video.mp4')).toBe(true);
+    expect(isVideoFormat('image.arw')).toBe(false);
   });
 });
 ```
@@ -167,6 +248,15 @@ Test with real files (download fixtures first):
 npm run test:download-fixtures
 npm run test:integration
 ```
+
+Video integration tests require FFmpeg and test video fixtures.
+
+### Test Fixtures
+
+Place test files in:
+- `tests/fixtures/images/` - JPEG, PNG test images
+- `tests/fixtures/raw/` - RAW file samples
+- `tests/fixtures/video/` - MP4, MOV test videos
 
 ## Dependencies
 
@@ -182,6 +272,15 @@ npm run test:integration
 | ora | Terminal spinners |
 | p-queue | Concurrency control |
 
+### External (System)
+
+| Tool | Purpose | Required For |
+|------|---------|--------------|
+| ffmpeg | Video frame extraction | Video support |
+| ffprobe | Video metadata | Video support |
+| rawtherapee-cli | RAW decoding | Quality preset |
+| darktable-cli | RAW decoding | Quality preset |
+
 ### Development
 
 | Package | Purpose |
@@ -190,6 +289,23 @@ npm run test:integration
 | vitest | Test runner |
 | eslint | Linting |
 | tsx | TypeScript execution |
+
+## Video Format Support
+
+Shoemaker supports these video formats:
+
+```typescript
+export const VIDEO_EXTENSIONS = [
+  // Common formats
+  'mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'flv', 'm4v',
+  // Professional formats
+  'mxf', 'mts', 'm2ts', 'mpg', 'mpeg', 'vob', 'dv',
+  // Camera-specific formats
+  'tod', 'mod', '3gp', 'r3d', 'braw',
+] as const;
+```
+
+Detection is case-insensitive and based on file extension.
 
 ## Troubleshooting
 
@@ -218,6 +334,9 @@ Or set in config:
 ```toml
 [processing]
 concurrency = 2
+
+[video]
+concurrency = 1
 ```
 
 ### "No embedded preview found"
@@ -226,3 +345,31 @@ The RAW file doesn't have embedded previews, or they're corrupted. Options:
 1. Use `--preset quality` to decode the RAW file
 2. Check if the file opens in other software
 3. Try `exiftool -preview:all image.arw` to see what's embedded
+
+### "FFprobe not found"
+
+Install FFmpeg (includes FFprobe):
+```bash
+# macOS
+brew install ffmpeg
+
+# Ubuntu/Debian
+sudo apt-get install ffmpeg
+
+# Verify installation
+ffprobe -version
+```
+
+### "Failed to extract frame"
+
+Common causes:
+1. Corrupt video file - try `ffprobe /path/to/video.mp4`
+2. Unsupported codec - check if FFmpeg was built with required codecs
+3. File permissions - ensure read access
+4. Timeout - very long videos may need extended timeout
+
+### "Black frame detection not working"
+
+Black frame detection uses Sharp to analyze frame luminance. If it's not working:
+1. Check Sharp is properly installed
+2. Adjust threshold in frame-extractor.ts (default: avgLuminance < 10)

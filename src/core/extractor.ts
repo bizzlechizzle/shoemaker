@@ -7,7 +7,7 @@
 
 import { exiftool } from 'exiftool-vendored';
 import type { PreviewAnalysis, PreviewInfo } from '../schemas/index.js';
-import { DEFAULT_MIN_PREVIEW_SIZE, RAW_EXTENSIONS, DECODED_EXTENSIONS } from '../schemas/index.js';
+import { DEFAULT_MIN_PREVIEW_SIZE, RAW_EXTENSIONS, DECODED_EXTENSIONS, VIDEO_EXTENSIONS } from '../schemas/index.js';
 import { ShoemakerError, ErrorCode, wrapError } from './errors.js';
 
 // Preview tag priority order (best to worst)
@@ -203,6 +203,14 @@ export function isRawFormat(filePath: string): boolean {
 export function isDecodedFormat(filePath: string): boolean {
   const ext = filePath.toLowerCase().split('.').pop() ?? '';
   return (DECODED_EXTENSIONS as readonly string[]).includes(ext);
+}
+
+/**
+ * Check if a file is a video format
+ */
+export function isVideoFormat(filePath: string): boolean {
+  const ext = filePath.toLowerCase().split('.').pop() ?? '';
+  return (VIDEO_EXTENSIONS as readonly string[]).includes(ext);
 }
 
 /**

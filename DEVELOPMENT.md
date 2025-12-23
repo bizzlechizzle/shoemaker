@@ -24,6 +24,20 @@ sudo apt-get install libvips-dev
 **Windows:**
 Sharp includes prebuilt binaries, no manual installation needed.
 
+### Optional Dependencies
+
+For full functionality:
+
+**macOS:**
+```bash
+brew install ffmpeg rawtherapee darktable
+```
+
+**Ubuntu/Debian:**
+```bash
+sudo apt-get install ffmpeg rawtherapee darktable
+```
+
 ## Getting Started
 
 ```bash
@@ -49,37 +63,42 @@ npm start -- doctor
 ### Overview
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                         CLI                              │
-│  (Commander.js commands: thumb, info, clean, status)    │
-└─────────────────────────┬───────────────────────────────┘
-                          │
-┌─────────────────────────▼───────────────────────────────┐
-│                      Services                            │
-│  (thumbnail-generator.ts, xmp-updater.ts)               │
-└─────────────────────────┬───────────────────────────────┘
-                          │
-┌─────────────────────────▼───────────────────────────────┐
-│                        Core                              │
-│  (extractor.ts, resizer.ts, config.ts, errors.ts)       │
-└─────────────────────────┬───────────────────────────────┘
-                          │
-┌─────────────────────────▼───────────────────────────────┐
-│                    External Tools                        │
-│  (ExifTool, Sharp/libvips, RawTherapee, darktable)      │
-└─────────────────────────────────────────────────────────┘
++-----------------------------------------------------------+
+|                         CLI                                |
+|  (Commander.js: thumb, info, clean, status, doctor)       |
++--------------------------+--------------------------------+
+                           |
++--------------------------v--------------------------------+
+|                      Services                              |
+|  (thumbnail-generator.ts, xmp-updater.ts)                 |
++--------------------------+--------------------------------+
+                           |
++--------------------------v--------------------------------+
+|                        Core                                |
+| Image: extractor.ts, resizer.ts, decoder.ts               |
+| Video: ffprobe.ts, frame-extractor.ts                     |
+| Config: config.ts, errors.ts                              |
++--------------------------+--------------------------------+
+                           |
++--------------------------v--------------------------------+
+|                    External Tools                          |
+| Image: ExifTool, Sharp/libvips, RawTherapee, darktable    |
+| Video: FFmpeg, FFprobe                                     |
++-----------------------------------------------------------+
 ```
 
 ### Module Responsibilities
 
 | Module | File | Responsibility |
 |--------|------|----------------|
-| **Extractor** | `src/core/extractor.ts` | Extract embedded previews via ExifTool |
+| **Extractor** | `src/core/extractor.ts` | Extract embedded previews via ExifTool, format detection |
 | **Decoder** | `src/core/decoder.ts` | RAW file decoding (embedded, sharp, RawTherapee, darktable, dcraw) |
 | **Resizer** | `src/core/resizer.ts` | Resize images via Sharp, convert to sRGB |
+| **FFprobe** | `src/core/ffprobe.ts` | Video metadata extraction |
+| **Frame Extractor** | `src/core/frame-extractor.ts` | Video frame extraction, timeline strips |
 | **Config** | `src/core/config.ts` | Load TOML config and presets |
 | **Errors** | `src/core/errors.ts` | Error classes and recovery logic |
-| **Generator** | `src/services/thumbnail-generator.ts` | Main pipeline orchestration |
+| **Generator** | `src/services/thumbnail-generator.ts` | Main pipeline orchestration (images + video) |
 | **XMP** | `src/services/xmp-updater.ts` | XMP sidecar read/write |
 | **Schemas** | `src/schemas/index.ts` | Zod validation schemas |
 
@@ -129,6 +148,28 @@ fallback_to_raw = false
 decoder = "embedded"
 ```
 
+### 4. Add a New Video Format
+
+1. Add extension to `VIDEO_EXTENSIONS` in `src/schemas/index.ts`:
+
+```typescript
+export const VIDEO_EXTENSIONS = [
+  // ... existing
+  'newformat',
+] as const;
+```
+
+2. Verify FFprobe can read the format:
+
+```bash
+ffprobe /path/to/file.newformat
+```
+
+### 5. Add a New RAW Format
+
+1. Add extension to `RAW_EXTENSIONS` in `src/schemas/index.ts`
+2. Test with real files to ensure ExifTool can extract previews
+
 ## Testing
 
 ### Unit Tests
@@ -141,7 +182,7 @@ npm test -- --coverage   # With coverage
 
 ### Integration Tests
 
-Integration tests require real RAW files:
+Integration tests require real RAW/video files:
 
 ```bash
 npm run test:download-fixtures  # Download test files
@@ -162,6 +203,13 @@ describe('myFunction', () => {
   });
 });
 ```
+
+### Test Fixtures
+
+Place test files in:
+- `tests/fixtures/images/` - JPEG, PNG samples
+- `tests/fixtures/raw/` - RAW file samples
+- `tests/fixtures/video/` - MP4, MOV samples
 
 ## Code Style
 
@@ -204,6 +252,17 @@ try {
 }
 ```
 
+### Error Codes
+
+| Code | Meaning | Recoverable |
+|------|---------|-------------|
+| `FILE_NOT_FOUND` | File doesn't exist | No |
+| `PERMISSION_DENIED` | Can't read/write | No |
+| `CORRUPT_FILE` | File is damaged | Yes |
+| `NO_PREVIEW` | No embedded preview | Yes |
+| `DECODE_FAILED` | Decoding error | Yes |
+| `DECODER_NOT_AVAILABLE` | Tool not installed | No |
+
 ## Building and Releasing
 
 ### Build
@@ -223,7 +282,7 @@ Output goes to `dist/`.
 ### Release
 
 ```bash
-git tag v0.1.0
+git tag v0.2.0
 git push --tags
 ```
 
@@ -235,6 +294,12 @@ GitHub Actions will publish to npm automatically.
 
 ```bash
 exiftool -a -G1 "*Preview*" "*Jpg*" image.arw
+```
+
+### Debug FFprobe
+
+```bash
+ffprobe -v error -show_format -show_streams video.mp4
 ```
 
 ### Debug Sharp
@@ -255,8 +320,8 @@ DEBUG=* npm start -- thumb /path/to/image
 ### schemas/index.ts
 
 Centralized location for:
-- **Constants**: `DEFAULT_MIN_PREVIEW_SIZE`, `RAW_EXTENSIONS`, `MAX_CONCURRENCY`, etc.
-- **Zod Schemas**: Validation for config, presets, and results
+- **Constants**: `DEFAULT_MIN_PREVIEW_SIZE`, `RAW_EXTENSIONS`, `VIDEO_EXTENSIONS`, `MAX_CONCURRENCY`, etc.
+- **Zod Schemas**: Validation for config, presets, results, and video info
 - **Type Exports**: All TypeScript types used across the codebase
 
 When adding new constants or types, add them here to maintain single source of truth.
@@ -269,25 +334,46 @@ Error handling strategy:
 - `isRecoverable()` for batch processing decisions
 - `shouldStopBatch()` and `shouldReduceConcurrency()` for flow control
 
-Error codes:
-| Code | Meaning | Recoverable |
-|------|---------|-------------|
-| `FILE_NOT_FOUND` | File doesn't exist | No |
-| `PERMISSION_DENIED` | Can't read/write | No |
-| `CORRUPT_FILE` | File is damaged | Yes |
-| `NO_PREVIEW` | No embedded preview | Yes |
-
 ### core/extractor.ts
 
 ExifTool integration:
 - `analyzeEmbeddedPreviews()` - Read metadata about available previews
 - `extractBestPreview()` - Get the largest preview as a buffer
-- `isRawFormat()` / `isDecodedFormat()` - Format detection
+- `isRawFormat()` / `isDecodedFormat()` / `isVideoFormat()` - Format detection
 
 Key considerations:
 - ExifTool runs as a persistent process - always call `shutdownExiftool()` on exit
 - Preview extraction uses temp files - cleaned up in `finally` block
 - Type guards used for safe value extraction from ExifTool output
+
+### core/ffprobe.ts
+
+Video metadata extraction:
+- `probeVideo()` - Get full video info (duration, resolution, codec, etc.)
+- `checkFfprobeAvailable()` / `checkFfmpegAvailable()` - Tool detection
+- `getVideoDuration()` / `hasAudio()` - Convenience functions
+
+Key considerations:
+- FFprobe availability is cached for performance
+- Detects interlacing via `field_order` metadata
+- Detects HDR via `color_transfer` metadata
+- Parses rotation from side data or format tags
+
+### core/frame-extractor.ts
+
+Video frame extraction:
+- `extractFrame()` - Single frame at specific time
+- `extractFrameAtPercent()` - Frame at percentage position
+- `extractMultipleFrames()` - Batch extraction
+- `generateTimelineStrip()` - Horizontal frame concatenation
+- `extractPosterFrame()` / `extractPreviewFrame()` - Configured positions
+
+Key features:
+- Safe zone calculation (skips first/last 5%)
+- Black frame detection and skipping
+- Automatic deinterlacing (yadif filter)
+- HDR to SDR tone mapping (Hable algorithm)
+- Rotation handling
 
 ### core/decoder.ts
 
@@ -321,9 +407,11 @@ Sharp integration:
 
 Main orchestration:
 1. Check if already processed (XMP sidecar)
-2. Determine source method (direct, extracted, decoded)
-3. Resize to all configured sizes
-4. Update XMP sidecar with metadata
+2. Determine file type (image, RAW, video)
+3. For video: Extract frames via FFmpeg
+4. For images/RAW: Extract preview or decode
+5. Resize to all configured sizes
+6. Update XMP sidecar with metadata
 
 Batch processing uses `p-queue` for concurrency control with adaptive throttling.
 

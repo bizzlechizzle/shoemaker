@@ -25,8 +25,32 @@ export {
   extractPreviewBuffer,
   isRawFormat,
   isDecodedFormat,
+  isVideoFormat,
   shutdownExiftool,
 } from './core/extractor.js';
+
+// Video modules
+export {
+  probeVideo,
+  getVideoDuration,
+  hasAudio,
+  checkFfprobeAvailable,
+  checkFfmpegAvailable,
+  getFfprobeVersion,
+  getFfmpegVersion,
+  clearFfprobeCache,
+} from './core/ffprobe.js';
+
+export {
+  extractFrame,
+  extractFrameAtPercent,
+  extractMultipleFrames,
+  generateTimelineStrip,
+  extractPosterFrame,
+  extractPreviewFrame,
+  type ExtractedFrame,
+  type FrameExtractionOptions,
+} from './core/frame-extractor.js';
 
 export {
   resizeImage,
@@ -72,6 +96,7 @@ export {
   generateForFile,
   generateForBatch,
   findImageFiles,
+  findVideoFiles,
   type GenerateOptions,
   type ProgressInfo,
 } from './services/thumbnail-generator.js';
@@ -93,10 +118,15 @@ export {
   PreviewAnalysisSchema,
   GenerationResultSchema,
   BatchResultSchema,
+  VideoInfoSchema,
+  VideoConfigSchema,
+  VIDEO_EXTENSIONS,
   type Config,
   type Preset,
   type SizeConfig,
   type BehaviorConfig,
+  type VideoConfig,
+  type VideoInfo,
   type PreviewAnalysis,
   type PreviewInfo,
   type ThumbnailResult,

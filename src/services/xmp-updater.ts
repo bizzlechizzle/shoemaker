@@ -8,12 +8,13 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { exiftool } from 'exiftool-vendored';
-import type { ThumbnailResult } from '../schemas/index.js';
+import type { ThumbnailResult, VideoInfo } from '../schemas/index.js';
 import { wrapError } from '../core/errors.js';
 
 export interface XmpUpdateData {
   thumbnails: ThumbnailResult[];
-  method: 'extracted' | 'decoded' | 'direct';
+  method: 'extracted' | 'decoded' | 'direct' | 'video';
+  videoInfo?: VideoInfo;
 }
 
 /**
@@ -45,12 +46,27 @@ export async function updateXmpSidecar(
 
     // Store thumbnail data in a standard XMP field as JSON
     // Using dc:source which accepts arbitrary text
-    const metadata = {
+    const metadata: Record<string, unknown> = {
       generated: true,
       generatedAt: new Date().toISOString(),
       method: data.method,
       thumbnails: JSON.parse(thumbnailsJson),
     };
+
+    // Add video metadata if present
+    if (data.videoInfo) {
+      metadata.video = {
+        duration: data.videoInfo.duration,
+        resolution: `${data.videoInfo.width}x${data.videoInfo.height}`,
+        frameRate: data.videoInfo.frameRate,
+        codec: data.videoInfo.codec,
+        bitrate: data.videoInfo.bitrate,
+        isInterlaced: data.videoInfo.isInterlaced,
+        isHdr: data.videoInfo.isHdr,
+        rotation: data.videoInfo.rotation,
+        audio: data.videoInfo.audio,
+      };
+    }
 
     await exiftool.write(xmpPath, {}, [
       '-overwrite_original',

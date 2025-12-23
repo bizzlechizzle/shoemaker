@@ -23,7 +23,7 @@ const program = new Command();
 
 program
   .name('shoemaker')
-  .description('A CLI that makes thumbnails from images and RAW files')
+  .description('A CLI that makes thumbnails from images, RAW files, and videos')
   .version(pkg.version);
 
 // Register commands

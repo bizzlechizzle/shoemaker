@@ -8,13 +8,16 @@
 import fs from 'fs/promises';
 import path from 'path';
 import PQueue from 'p-queue';
-import type { Config, Preset, GenerationResult, BatchResult } from '../schemas/index.js';
-import { analyzeEmbeddedPreviews, extractBestPreview, isRawFormat, isDecodedFormat } from '../core/extractor.js';
-import { generateThumbnails as resizeThumbnails } from '../core/resizer.js';
+import type { Config, Preset, GenerationResult, BatchResult, ThumbnailResult } from '../schemas/index.js';
+import { VIDEO_EXTENSIONS } from '../schemas/index.js';
+import { analyzeEmbeddedPreviews, extractBestPreview, isRawFormat, isDecodedFormat, isVideoFormat } from '../core/extractor.js';
+import { generateThumbnails as resizeThumbnails, generateThumbnail } from '../core/resizer.js';
 import { getBehavior, expandPath } from '../core/config.js';
 import { ShoemakerError, ErrorCode, wrapError, shouldStopBatch, shouldReduceConcurrency } from '../core/errors.js';
 import { decodeRawFile as decodeRaw, type DecodeOptions } from '../core/decoder.js';
 import { updateXmpSidecar, hasExistingThumbnails } from './xmp-updater.js';
+import { probeVideo, checkFfprobeAvailable } from '../core/ffprobe.js';
+import { extractPosterFrame, extractPreviewFrame, generateTimelineStrip } from '../core/frame-extractor.js';
 
 export interface GenerateOptions {
   config: Config;
@@ -28,10 +31,131 @@ export interface ProgressInfo {
   current: string;
   completed: number;
   total: number;
-  method?: 'extracted' | 'decoded' | 'direct';
+  method?: 'extracted' | 'decoded' | 'direct' | 'video';
   status: 'processing' | 'success' | 'error' | 'skipped';
   message?: string;
   duration?: number;
+}
+
+/**
+ * Generate thumbnails for a video file
+ */
+async function generateVideoThumbnails(
+  filePath: string,
+  options: GenerateOptions
+): Promise<GenerationResult> {
+  const startTime = Date.now();
+  const { config, dryRun } = options;
+  const warnings: string[] = [];
+
+  // Check FFprobe availability
+  const ffprobeAvailable = await checkFfprobeAvailable();
+  if (!ffprobeAvailable) {
+    throw new ShoemakerError(
+      'FFprobe not found. Install FFmpeg to process video files.',
+      ErrorCode.DECODER_NOT_AVAILABLE,
+      filePath
+    );
+  }
+
+  // Get video info
+  const videoInfo = await probeVideo(filePath);
+
+  if (videoInfo.isInterlaced) {
+    warnings.push('Video is interlaced, applying deinterlacing');
+  }
+  if (videoInfo.isHdr) {
+    warnings.push('Video is HDR, applying tone mapping');
+  }
+  if (videoInfo.rotation) {
+    warnings.push(`Video has rotation: ${videoInfo.rotation}°`);
+  }
+
+  if (dryRun) {
+    return {
+      source: filePath,
+      method: 'video',
+      thumbnails: [],
+      warnings: ['Dry run: no files written', ...warnings],
+      duration: Date.now() - startTime,
+    };
+  }
+
+  // Determine output directory
+  const stem = path.basename(filePath, path.extname(filePath));
+  const outputDir = getOutputDir(filePath, stem, config);
+  await fs.mkdir(outputDir, { recursive: true });
+
+  const thumbnails: ThumbnailResult[] = [];
+  const videoConfig = config.video;
+
+  // Extract poster frame
+  const posterFrame = await extractPosterFrame(filePath, videoConfig);
+  const posterResult = await generateThumbnail(
+    posterFrame.buffer,
+    path.join(outputDir, `${stem}_poster_${config.sizes.thumb?.width ?? 300}.webp`),
+    {
+      width: config.sizes.thumb?.width ?? 300,
+      format: (config.sizes.thumb?.format ?? 'webp') as 'webp' | 'jpeg' | 'png' | 'avif',
+      quality: config.sizes.thumb?.quality ?? 80,
+    }
+  );
+  thumbnails.push({ ...posterResult, size: 'poster' });
+
+  // Extract preview frame
+  const previewFrame = await extractPreviewFrame(filePath, videoConfig);
+  const previewResult = await generateThumbnail(
+    previewFrame.buffer,
+    path.join(outputDir, `${stem}_preview_${config.sizes.preview?.width ?? 1600}.webp`),
+    {
+      width: config.sizes.preview?.width ?? 1600,
+      format: (config.sizes.preview?.format ?? 'webp') as 'webp' | 'jpeg' | 'png' | 'avif',
+      quality: config.sizes.preview?.quality ?? 85,
+    }
+  );
+  thumbnails.push({ ...previewResult, size: 'preview' });
+
+  // Generate timeline strip
+  const timelineBuffer = await generateTimelineStrip(
+    filePath,
+    videoConfig.timelineFrames,
+    videoConfig.timelineHeight,
+    {
+      deinterlace: videoConfig.autoDeinterlace,
+      rotate: videoConfig.autoRotate,
+      skipBlackFrames: videoConfig.skipBlackFrames,
+      hdrToneMap: videoConfig.hdrToneMap,
+    }
+  );
+  const timelinePath = path.join(outputDir, `${stem}_timeline.jpg`);
+  await fs.writeFile(timelinePath, timelineBuffer);
+
+  const timelineStats = await fs.stat(timelinePath);
+  thumbnails.push({
+    size: 'timeline',
+    width: 0, // Will be calculated by strip dimensions
+    height: videoConfig.timelineHeight,
+    format: 'jpeg',
+    path: timelinePath,
+    bytes: timelineStats.size,
+  });
+
+  // Update XMP sidecar with video metadata
+  if (config.xmp.updateSidecars) {
+    await updateXmpSidecar(filePath, {
+      thumbnails,
+      method: 'video',
+      videoInfo,
+    });
+  }
+
+  return {
+    source: filePath,
+    method: 'video',
+    thumbnails,
+    warnings,
+    duration: Date.now() - startTime,
+  };
 }
 
 /**
@@ -58,6 +182,11 @@ export async function generateForFile(
         duration: Date.now() - startTime,
       };
     }
+  }
+
+  // Route video files to video processor
+  if (isVideoFormat(filePath)) {
+    return generateVideoThumbnails(filePath, options);
   }
 
   // Determine source method and get source buffer
@@ -272,16 +401,22 @@ function getOutputDir(filePath: string, stem: string, config: Config): string {
 }
 
 /**
- * Find all supported image files in a directory
+ * Find all supported media files (images and videos) in a directory
  */
 export async function findImageFiles(
   dirPath: string,
   config: { filetypes: { include: string[]; exclude: string[] } },
-  recursive: boolean = false
+  recursive: boolean = false,
+  includeVideo: boolean = true
 ): Promise<string[]> {
   const files: string[] = [];
   const include = new Set(config.filetypes.include.map(ext => ext.toLowerCase()));
   const exclude = new Set(config.filetypes.exclude.map(ext => ext.toLowerCase()));
+
+  // Add video extensions if enabled
+  const videoExtensions = includeVideo
+    ? new Set(VIDEO_EXTENSIONS as readonly string[])
+    : new Set<string>();
 
   async function scanDir(dir: string) {
     const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -293,7 +428,39 @@ export async function findImageFiles(
         await scanDir(fullPath);
       } else if (entry.isFile()) {
         const ext = path.extname(entry.name).slice(1).toLowerCase();
-        if (include.has(ext) && !exclude.has(ext)) {
+        const isIncluded = include.has(ext) || videoExtensions.has(ext);
+        if (isIncluded && !exclude.has(ext)) {
+          files.push(fullPath);
+        }
+      }
+    }
+  }
+
+  await scanDir(dirPath);
+  return files.sort();
+}
+
+/**
+ * Find all supported video files in a directory
+ */
+export async function findVideoFiles(
+  dirPath: string,
+  recursive: boolean = false
+): Promise<string[]> {
+  const files: string[] = [];
+  const videoExtensions = new Set(VIDEO_EXTENSIONS as readonly string[]);
+
+  async function scanDir(dir: string) {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+
+      if (entry.isDirectory() && recursive) {
+        await scanDir(fullPath);
+      } else if (entry.isFile()) {
+        const ext = path.extname(entry.name).slice(1).toLowerCase();
+        if (videoExtensions.has(ext)) {
           files.push(fullPath);
         }
       }
