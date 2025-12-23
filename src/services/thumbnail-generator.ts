@@ -13,6 +13,7 @@ import { analyzeEmbeddedPreviews, extractBestPreview, isRawFormat, isDecodedForm
 import { generateThumbnails as resizeThumbnails } from '../core/resizer.js';
 import { getBehavior, expandPath } from '../core/config.js';
 import { ShoemakerError, ErrorCode, wrapError, shouldStopBatch, shouldReduceConcurrency } from '../core/errors.js';
+import { decodeRawFile as decodeRaw, type DecodeOptions } from '../core/decoder.js';
 import { updateXmpSidecar, hasExistingThumbnails } from './xmp-updater.js';
 
 export interface GenerateOptions {
@@ -85,8 +86,14 @@ export async function generateForFile(
       sourceBuffer = extracted.buffer;
       method = 'extracted';
     } else if (behavior.fallbackToRaw) {
-      // Slow path: decode RAW
-      sourceBuffer = await decodeRawFile(filePath, behavior.decoder);
+      // Slow path: decode RAW using configured decoder
+      const decodeOptions: DecodeOptions = {
+        decoder: behavior.decoder as DecodeOptions['decoder'],
+        fallbackDecoder: behavior.fallbackDecoder as DecodeOptions['decoder'],
+        targetWidth: config.processing.minPreviewSize,
+        quality: 95,
+      };
+      sourceBuffer = await decodeRaw(filePath, decodeOptions);
       method = 'decoded';
     } else if (behavior.useLargestAvailable && analysis.bestPreview) {
       // Use whatever's available
@@ -262,19 +269,6 @@ function getOutputDir(filePath: string, stem: string, config: Config): string {
   const sourceDir = path.dirname(filePath);
   const folderName = config.output.sidecarFolder.replace('{stem}', stem);
   return path.join(sourceDir, folderName);
-}
-
-/**
- * Decode RAW file using available decoder
- * Note: This is a placeholder - actual implementation would use libraw, RawTherapee, etc.
- */
-async function decodeRawFile(filePath: string, decoder?: string): Promise<Buffer> {
-  // For now, throw an error - RAW decoding requires additional implementation
-  throw new ShoemakerError(
-    `RAW decoding not yet implemented (decoder: ${decoder ?? 'none'})`,
-    ErrorCode.DECODER_NOT_AVAILABLE,
-    filePath
-  );
 }
 
 /**

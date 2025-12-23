@@ -2,7 +2,7 @@
 
 > A CLI that makes thumbnails from images and RAW files.
 
-**Version:** 0.1.1 | **License:** MIT | **Node.js:** 20+
+**Version:** 0.2.0 | **License:** MIT | **Node.js:** 20+
 
 ## Features
 
@@ -56,19 +56,23 @@ shoemaker thumb /photos/import/ -r        # Process recursively
 shoemaker thumb /photos/image.arw         # Process single file
 shoemaker thumb /photos/ --preset quality # Use high-quality preset
 shoemaker thumb /photos/ --force          # Regenerate existing
+shoemaker thumb /photos/ --resume         # Resume interrupted batch
 shoemaker thumb /photos/ --dry-run        # Show what would be done
 shoemaker thumb /photos/ --json           # Output as JSON
 shoemaker thumb /photos/ -c 8             # Use 8 concurrent workers
+shoemaker thumb /photos/ --error-log ./errors.json  # Custom error log path
 ```
 
 **Options:**
 - `-r, --recursive` — Process subdirectories
 - `-p, --preset <name>` — Preset to use (fast, quality, portable)
 - `-f, --force` — Regenerate even if thumbnails exist
+- `--resume` — Skip files that already have thumbnails (resume interrupted batch)
 - `--dry-run` — Show what would be done without writing files
 - `-c, --concurrency <n>` — Number of files to process in parallel
 - `-q, --quiet` — Suppress progress output
 - `--json` — Output results as JSON
+- `--error-log <path>` — Write error log to specified JSON file (default: `.shoemaker-errors.json`)
 
 ### `shoemaker info <file>`
 
@@ -186,28 +190,171 @@ Uses only bundled dependencies (no system tools).
 
 ## Library Usage
 
-```typescript
-import { generateThumbnails, loadConfig, loadPreset } from 'shoemaker';
+Shoemaker is designed to be used as a library in your own applications. All functionality is available programmatically.
 
-// Simple usage
+### Simple Usage
+
+```typescript
+import { generateThumbnails } from 'shoemaker';
+
+// One-liner: generate thumbnails with default settings
 const result = await generateThumbnails('/path/to/image.arw');
 console.log(result.thumbnails);
+// [{ path: '.../thumb_300.webp', width: 300, ... }, ...]
+```
 
-// With options
+### With Options
+
+```typescript
+import { generateThumbnails } from 'shoemaker';
+
 const result = await generateThumbnails('/path/to/image.arw', {
-  preset: 'quality',
-  force: true,
-  onProgress: (info) => console.log(info.status),
+  preset: 'quality',    // Use high-quality RAW decode
+  force: true,          // Regenerate even if exists
+  onProgress: (info) => console.log(`${info.status}: ${info.current}`),
 });
+```
 
-// Full control
-import { generateForFile, generateForBatch, findImageFiles } from 'shoemaker';
+### Full Control
 
+```typescript
+import {
+  generateForFile,
+  generateForBatch,
+  findImageFiles,
+  loadConfig,
+  loadPreset,
+  applyPreset,
+} from 'shoemaker';
+
+// Load config and preset
 const config = await loadConfig();
 const preset = await loadPreset('fast', config);
+const finalConfig = applyPreset(config, preset);
 
-const files = await findImageFiles('/photos/import/', config, true);
-const result = await generateForBatch(files, { config, preset });
+// Process single file
+const result = await generateForFile('/path/to/image.arw', {
+  config: finalConfig,
+  preset,
+  force: true,
+  onProgress: (info) => console.log(info),
+});
+
+// Process batch
+const files = await findImageFiles('/photos/import/', finalConfig, true);
+const batchResult = await generateForBatch(files, {
+  config: finalConfig,
+  preset,
+  onProgress: (info) => {
+    console.log(`[${info.completed}/${info.total}] ${info.current}`);
+  },
+});
+```
+
+### RAW Decoding
+
+```typescript
+import {
+  decodeRawFile,
+  detectAvailableDecoders,
+  isDecoderAvailable,
+} from 'shoemaker';
+
+// Check available decoders
+const decoders = await detectAvailableDecoders();
+console.log(decoders);
+// Map { 'embedded' => {...}, 'sharp' => {...}, 'rawtherapee' => {...} }
+
+// Decode RAW file to buffer
+const buffer = await decodeRawFile('/path/to/image.arw', {
+  decoder: 'rawtherapee',
+  fallbackDecoder: 'embedded',
+  quality: 95,
+});
+```
+
+### Preview Extraction
+
+```typescript
+import {
+  analyzeEmbeddedPreviews,
+  extractBestPreview,
+  isRawFormat,
+} from 'shoemaker';
+
+// Check if file is RAW
+if (isRawFormat('/path/to/image.arw')) {
+  // Analyze embedded previews
+  const analysis = await analyzeEmbeddedPreviews('/path/to/image.arw');
+  console.log(analysis.previews);
+  // { jpgFromRaw: { width: 4240, height: 2832, size: 3200000 }, ... }
+
+  // Extract best preview
+  const { buffer, tag, width, height } = await extractBestPreview('/path/to/image.arw');
+}
+```
+
+### XMP Sidecar Management
+
+```typescript
+import {
+  hasExistingThumbnails,
+  readThumbnailInfo,
+  updateXmpSidecar,
+  clearThumbnailInfo,
+} from 'shoemaker';
+
+// Check if file has thumbnails
+const hasThumbs = await hasExistingThumbnails('/path/to/image.arw');
+
+// Read thumbnail info from XMP
+const info = await readThumbnailInfo('/path/to/image.arw');
+if (info.exists) {
+  console.log(info.generatedAt, info.method, info.thumbnails);
+}
+
+// Update XMP with thumbnail info
+await updateXmpSidecar('/path/to/image.arw', {
+  thumbnails: [{ path: '...', width: 300, ... }],
+  method: 'extracted',
+});
+
+// Clear thumbnail info
+await clearThumbnailInfo('/path/to/image.arw');
+```
+
+### Error Handling
+
+```typescript
+import { ShoemakerError, ErrorCode, wrapError } from 'shoemaker';
+
+try {
+  await generateThumbnails('/path/to/image.arw');
+} catch (err) {
+  if (err instanceof ShoemakerError) {
+    console.log(err.code);    // ErrorCode.FILE_NOT_FOUND
+    console.log(err.file);    // '/path/to/image.arw'
+    console.log(err.message); // 'File not found: /path/to/image.arw'
+  }
+}
+```
+
+### TypeScript Types
+
+All types are exported for TypeScript users:
+
+```typescript
+import type {
+  Config,
+  Preset,
+  GenerationResult,
+  BatchResult,
+  ProgressInfo,
+  PreviewAnalysis,
+  ThumbnailResult,
+  DecoderType,
+  DecodeOptions,
+} from 'shoemaker';
 ```
 
 ## Generated Thumbnails

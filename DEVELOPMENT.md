@@ -75,6 +75,7 @@ npm start -- doctor
 | Module | File | Responsibility |
 |--------|------|----------------|
 | **Extractor** | `src/core/extractor.ts` | Extract embedded previews via ExifTool |
+| **Decoder** | `src/core/decoder.ts` | RAW file decoding (embedded, sharp, RawTherapee, darktable, dcraw) |
 | **Resizer** | `src/core/resizer.ts` | Resize images via Sharp, convert to sRGB |
 | **Config** | `src/core/config.ts` | Load TOML config and presets |
 | **Errors** | `src/core/errors.ts` | Error classes and recovery logic |
@@ -287,6 +288,27 @@ Key considerations:
 - ExifTool runs as a persistent process - always call `shutdownExiftool()` on exit
 - Preview extraction uses temp files - cleaned up in `finally` block
 - Type guards used for safe value extraction from ExifTool output
+
+### core/decoder.ts
+
+RAW decoding with multiple backends:
+
+| Decoder | Method | Quality | Speed | Notes |
+|---------|--------|---------|-------|-------|
+| `embedded` | Extract preview | Good | Fastest | Default, no decode |
+| `sharp` | libvips | Basic | Fast | Limited RAW support |
+| `rawtherapee` | CLI | Best | Slow | Professional quality |
+| `darktable` | CLI | Best | Slow | Alternative to RT |
+| `dcraw` | CLI | Good | Medium | Legacy, basic |
+
+Key functions:
+- `decodeRawFile(path, options)` - Decode with fallback chain
+- `detectAvailableDecoders()` - Check what's installed
+- `selectDecoder(preferred, fallback)` - Auto-select best
+
+Security:
+- Command whitelist: `ALLOWED_COMMANDS` limits CLI decoders
+- Uses `execFile` with array args - no shell injection
 
 ### core/resizer.ts
 

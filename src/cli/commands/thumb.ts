@@ -10,7 +10,8 @@ import path from 'path';
 import ora from 'ora';
 import { loadConfig, loadPreset, applyPreset } from '../../core/config.js';
 import { generateForFile, generateForBatch, findImageFiles, type ProgressInfo } from '../../services/thumbnail-generator.js';
-import type { Config, Preset } from '../../schemas/index.js';
+import { hasExistingThumbnails } from '../../services/xmp-updater.js';
+import type { Config, Preset, BatchResult } from '../../schemas/index.js';
 import { MAX_CONCURRENCY, MAX_ERRORS_TO_DISPLAY } from '../../schemas/index.js';
 import { wrapError } from '../../core/errors.js';
 
@@ -52,10 +53,12 @@ export const thumbCommand = new Command('thumb')
   .option('-r, --recursive', 'Process subdirectories', false)
   .option('-p, --preset <name>', 'Preset to use (fast, quality, portable)', 'fast')
   .option('-f, --force', 'Regenerate even if thumbnails exist', false)
+  .option('--resume', 'Skip files that already have thumbnails (resume interrupted batch)', false)
   .option('--dry-run', 'Show what would be done without writing files', false)
   .option('-c, --concurrency <n>', 'Number of files to process in parallel', '4')
   .option('-q, --quiet', 'Suppress progress output', false)
   .option('--json', 'Output results as JSON', false)
+  .option('--error-log <path>', 'Write error log to JSON file')
   .action(async (inputPath: string, options) => {
     const config = await loadConfig();
     const preset = await loadPreset(options.preset, config);
@@ -118,15 +121,51 @@ async function processDirectory(
   dirPath: string,
   config: Config,
   preset: Preset,
-  options: { recursive?: boolean; force?: boolean; dryRun?: boolean; quiet?: boolean; json?: boolean }
+  options: { recursive?: boolean; force?: boolean; resume?: boolean; dryRun?: boolean; quiet?: boolean; json?: boolean; errorLog?: string }
 ): Promise<void> {
-  const files = await findImageFiles(dirPath, config, options.recursive);
+  let files = await findImageFiles(dirPath, config, options.recursive);
 
   if (files.length === 0) {
     if (!options.quiet && !options.json) {
       console.log('No supported image files found.');
     }
     return;
+  }
+
+  // If resume mode, filter out files that already have thumbnails
+  if (options.resume && !options.force) {
+    const spinner = options.quiet ? null : ora('Checking existing thumbnails...').start();
+    const pendingFiles: string[] = [];
+    let checked = 0;
+
+    for (const file of files) {
+      const hasThumbs = await hasExistingThumbnails(file);
+      if (!hasThumbs) {
+        pendingFiles.push(file);
+      }
+      checked++;
+      if (spinner) {
+        spinner.text = `Checking existing thumbnails... ${checked}/${files.length}`;
+      }
+    }
+
+    if (spinner) {
+      spinner.stop();
+    }
+
+    const skippedCount = files.length - pendingFiles.length;
+    if (skippedCount > 0 && !options.quiet && !options.json) {
+      console.log(`Resuming: skipping ${skippedCount} files with existing thumbnails`);
+    }
+
+    files = pendingFiles;
+
+    if (files.length === 0) {
+      if (!options.quiet && !options.json) {
+        console.log('All files already have thumbnails. Use --force to regenerate.');
+      }
+      return;
+    }
   }
 
   if (!options.quiet && !options.json) {
@@ -182,7 +221,49 @@ async function processDirectory(
     }
   }
 
+  // Write error log file if specified or if there are errors
+  if (result.errors.length > 0) {
+    const errorLogPath = options.errorLog ?? path.join(dirPath, '.shoemaker-errors.json');
+    await writeErrorLog(errorLogPath, result, dirPath);
+
+    if (!options.quiet && !options.json) {
+      console.log(`\nError log written to: ${path.relative(process.cwd(), errorLogPath)}`);
+    }
+  }
+
   if (result.failed > 0) {
     process.exitCode = 1;
   }
+}
+
+/**
+ * Write error log to JSON file
+ */
+async function writeErrorLog(
+  logPath: string,
+  result: BatchResult,
+  basePath: string
+): Promise<void> {
+  const errorLog = {
+    timestamp: new Date().toISOString(),
+    version: '0.2.0',
+    basePath,
+    batch: {
+      total: result.total,
+      succeeded: result.succeeded,
+      failed: result.failed,
+      skipped: result.skipped,
+      warnings: result.warnings,
+      durationMs: result.duration,
+    },
+    errors: result.errors.map(e => ({
+      file: e.file,
+      relativeFile: path.relative(basePath, e.file),
+      code: e.code,
+      message: e.message,
+      timestamp: new Date().toISOString(),
+    })),
+  };
+
+  await fs.writeFile(logPath, JSON.stringify(errorLog, null, 2));
 }

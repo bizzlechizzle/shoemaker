@@ -56,6 +56,17 @@ export {
   shouldReduceConcurrency,
 } from './core/errors.js';
 
+export {
+  decodeRawFile,
+  detectAvailableDecoders,
+  selectDecoder,
+  isDecoderAvailable,
+  getDecoderInfo,
+  clearDecoderCache,
+  type DecoderType,
+  type DecodeOptions,
+} from './core/decoder.js';
+
 // Services
 export {
   generateForFile,
