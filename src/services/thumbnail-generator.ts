@@ -206,6 +206,15 @@ export async function generateForFile(
     }
     method = 'direct';
   } else if (isRawFormat(filePath)) {
+    // RAW file - check for empty file before expensive operations
+    const stats = await fs.stat(filePath);
+    if (stats.size === 0) {
+      throw new ShoemakerError(
+        `File is empty: ${filePath}`,
+        ErrorCode.CORRUPT_FILE,
+        filePath
+      );
+    }
     // RAW file - try to extract preview
     const analysis = await analyzeEmbeddedPreviews(filePath);
 

@@ -144,9 +144,8 @@ export async function readThumbnailInfo(imagePath: string): Promise<{
         method: metadata.method,
         thumbnails: metadata.thumbnails,
       };
-    } catch (parseErr) {
-      // Parse error - metadata corrupted, log warning for debugging
-      console.warn(`Warning: Failed to parse thumbnail metadata in ${xmpPath}: ${(parseErr as Error).message}`);
+    } catch {
+      // Parse error - metadata corrupted or invalid format
       return { exists: false };
     }
   } catch {

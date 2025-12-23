@@ -18,6 +18,14 @@ import type { VideoInfo, VideoConfig } from '../schemas/index.js';
 
 const execFileAsync = promisify(execFile);
 
+// Frame extraction constants
+/** Average luminance threshold for black frame detection (0-255) */
+const BLACK_FRAME_THRESHOLD = 10;
+/** Skip first/last percentage of video to avoid credits/intros */
+const SAFE_ZONE_MARGIN = 0.05;
+/** Offset step for black frame retry (percentage of duration) */
+const BLACK_FRAME_OFFSET_STEP = 0.02;
+
 export interface ExtractedFrame {
   buffer: Buffer;
   width: number;
@@ -50,8 +58,8 @@ async function isBlackFrame(buffer: Buffer): Promise<boolean> {
     // Check if all channels are very dark
     const avgLuminance = stats.channels.reduce((sum, ch) => sum + ch.mean, 0) / stats.channels.length;
 
-    // Consider black if average luminance is below 10 (out of 255)
-    return avgLuminance < 10;
+    // Consider black if average luminance is below threshold
+    return avgLuminance < BLACK_FRAME_THRESHOLD;
   } catch {
     return false;
   }
@@ -100,9 +108,9 @@ function buildFilterChain(
  * Calculate seek time from percentage
  */
 function calculateSeekTime(duration: number, percentage: number): number {
-  // Skip first 5% and last 5% of video
-  const safeStart = duration * 0.05;
-  const safeEnd = duration * 0.95;
+  // Skip first/last portion of video to avoid credits/intros
+  const safeStart = duration * SAFE_ZONE_MARGIN;
+  const safeEnd = duration * (1 - SAFE_ZONE_MARGIN);
   const safeRange = safeEnd - safeStart;
 
   // Map percentage to safe range
@@ -246,13 +254,13 @@ export async function extractMultipleFrames(
       if (options.skipBlackFrames !== false) {
         let attempts = 0;
         const maxAttempts = 3;
-        const offsetStep = videoInfo.duration * 0.02; // 2% offset
+        const offsetStep = videoInfo.duration * BLACK_FRAME_OFFSET_STEP;
 
         while (await isBlackFrame(buffer) && attempts < maxAttempts) {
           attempts++;
           const newTime = seekTime + (offsetStep * attempts);
 
-          if (newTime >= videoInfo.duration * 0.95) break;
+          if (newTime >= videoInfo.duration * (1 - SAFE_ZONE_MARGIN)) break;
 
           await execFileAsync('ffmpeg', [
             '-ss', String(newTime),

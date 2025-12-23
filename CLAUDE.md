@@ -1,4 +1,4 @@
-# Universal Development Standards v0.1.2
+# Universal Development Standards v0.1.3
 
 Consistent, maintainable code across all projects.
 
@@ -101,8 +101,8 @@ Use hooks (settings.json) for formatting/linting—not CLAUDE.md.
 ### App versions
 - Format: `MAJOR.MINOR.PATCH` (e.g., `1.0.12`)
 - Each commit that modifies app code **must** increment PATCH by exactly 1
-- Increment MINOR (reset PATCH to 0) for new features
-- Increment MAJOR (reset MINOR and PATCH to 0) for breaking changes
+- **Claude may ONLY increment PATCH** — never change MAJOR or MINOR
+- MINOR/MAJOR bumps require explicit user instruction (e.g., "bump to 0.2.0")
 - **Do not** use git commit counts—version is manually incremented per commit
 - Do not bump version for repo-depot syncs that don't change app logic
 - Apps receive `.depot-version` file indicating synced repo-depot version

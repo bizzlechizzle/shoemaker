@@ -17,6 +17,7 @@ import { promisify } from 'util';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
+import crypto from 'crypto';
 import sharp from 'sharp';
 import { ShoemakerError, ErrorCode, wrapError } from './errors.js';
 import { extractBestPreview } from './extractor.js';
@@ -243,7 +244,8 @@ async function decodeWithSharp(filePath: string, options: DecodeOptions): Promis
  */
 async function decodeWithRawTherapee(filePath: string, options: DecodeOptions): Promise<Buffer> {
   const tmpDir = os.tmpdir();
-  const tmpFile = path.join(tmpDir, `shoemaker-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`);
+  const uniqueId = crypto.randomBytes(8).toString('hex');
+  const tmpFile = path.join(tmpDir, `shoemaker-${uniqueId}.jpg`);
 
   try {
     const args = [
@@ -288,7 +290,8 @@ async function decodeWithRawTherapee(filePath: string, options: DecodeOptions): 
  */
 async function decodeWithDarktable(filePath: string, options: DecodeOptions): Promise<Buffer> {
   const tmpDir = os.tmpdir();
-  const tmpFile = path.join(tmpDir, `shoemaker-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`);
+  const uniqueId = crypto.randomBytes(8).toString('hex');
+  const tmpFile = path.join(tmpDir, `shoemaker-${uniqueId}.jpg`);
 
   try {
     const args = [filePath, tmpFile];
