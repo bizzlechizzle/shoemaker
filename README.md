@@ -2,7 +2,7 @@
 
 > A CLI that makes thumbnails from images, RAW files, and videos.
 
-**Version:** 0.2.0 | **License:** MIT | **Node.js:** 20+
+**Version:** 0.1.3 | **License:** MIT | **Node.js:** 20+
 
 ## Features
 
