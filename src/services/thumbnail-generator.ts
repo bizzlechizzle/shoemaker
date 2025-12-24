@@ -37,6 +37,10 @@ export interface ProgressInfo {
   status: 'processing' | 'success' | 'error' | 'skipped';
   message?: string;
   duration?: number;
+  /** Time elapsed since batch started (ms) */
+  elapsedMs?: number;
+  /** Batch start timestamp for ETA calculations */
+  batchStartTime?: number;
 }
 
 /**
@@ -359,6 +363,8 @@ export async function generateForBatch(
         completed,
         total: files.length,
         status: 'processing',
+        batchStartTime: startTime,
+        elapsedMs: Date.now() - startTime,
       };
       onProgress?.(progressInfo);
 
@@ -373,6 +379,7 @@ export async function generateForBatch(
           method: result.method,
           status: result.warnings.some(w => w.includes('Skipped')) ? 'skipped' : 'success',
           duration: result.duration,
+          elapsedMs: Date.now() - startTime,
         });
       } catch (err) {
         const shoemakerError = wrapError(err, file);
@@ -396,6 +403,7 @@ export async function generateForBatch(
           completed,
           status: 'error',
           message: shoemakerError.message,
+          elapsedMs: Date.now() - startTime,
         });
       }
     });

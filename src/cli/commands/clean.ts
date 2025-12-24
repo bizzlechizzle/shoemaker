@@ -7,10 +7,10 @@
 import { Command } from 'commander';
 import fs from 'fs/promises';
 import path from 'path';
-import ora from 'ora';
 import { loadConfig } from '../../core/config.js';
 import { readThumbnailInfo, clearThumbnailInfo } from '../../services/xmp-updater.js';
 import { findImageFiles } from '../../services/thumbnail-generator.js';
+import { ProgressTracker, formatDuration } from '../progress.js';
 
 export const cleanCommand = new Command('clean')
   .description('Remove generated thumbnails')
@@ -86,20 +86,38 @@ async function cleanDirectory(
     return;
   }
 
-  const spinner = options.quiet ? null : ora('Scanning for thumbnails...').start();
+  const startTime = Date.now();
+  const tracker = options.quiet ? null : new ProgressTracker(files.length);
   let cleaned = 0;
   let skipped = 0;
+  let processed = 0;
 
   for (const file of files) {
     const info = await readThumbnailInfo(file);
 
     if (!info.exists) {
       skipped++;
+      processed++;
+      if (tracker) {
+        tracker.update({
+          current: path.basename(file),
+          completed: processed,
+          total: files.length,
+          status: 'skipped',
+        });
+        tracker.render();
+      }
       continue;
     }
 
-    if (spinner) {
-      spinner.text = `Cleaning ${path.basename(file)}...`;
+    if (tracker) {
+      tracker.update({
+        current: path.basename(file),
+        completed: processed,
+        total: files.length,
+        status: 'processing',
+      });
+      tracker.render();
     }
 
     const stem = path.basename(file, path.extname(file));
@@ -120,14 +138,26 @@ async function cleanDirectory(
     }
 
     cleaned++;
+    processed++;
+    if (tracker) {
+      tracker.update({
+        current: path.basename(file),
+        completed: processed,
+        total: files.length,
+        status: 'success',
+      });
+      tracker.render();
+    }
   }
 
-  if (spinner) {
-    spinner.stop();
+  if (tracker) {
+    tracker.clear();
   }
+
+  const duration = Date.now() - startTime;
 
   if (!options.quiet) {
-    console.log(`\nCleaned: ${cleaned} files`);
+    console.log(`\nCleaned: ${cleaned} files in ${formatDuration(duration)}`);
     console.log(`Skipped: ${skipped} files (no thumbnails)`);
     if (options.dryRun) {
       console.log('\n(Dry run - no files were actually removed)');

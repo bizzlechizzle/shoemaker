@@ -566,6 +566,15 @@ hdrToneMap = true
 
 Or create `.shoemaker.toml` in your project directory for project-specific settings.
 
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `PROGRESS_SOCKET` | Unix socket path for progress reporting | (none) |
+| `PROGRESS_SESSION_ID` | Session identifier for progress messages | (none) |
+
+When `PROGRESS_SOCKET` is set, shoemaker sends JSON progress messages to the socket enabling orchestration tools to track processing status, ETA, and send control commands (pause/resume/cancel).
+
 ## Requirements
 
 - **Node.js 20+**

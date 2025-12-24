@@ -14,6 +14,7 @@ import { hasExistingThumbnails } from '../../services/xmp-updater.js';
 import type { Config, Preset, BatchResult } from '../../schemas/index.js';
 import { MAX_CONCURRENCY, MAX_ERRORS_TO_DISPLAY } from '../../schemas/index.js';
 import { wrapError } from '../../core/errors.js';
+import { ProgressTracker, formatSummary } from '../progress.js';
 
 /**
  * Validate that input path exists and is accessible
@@ -221,7 +222,8 @@ async function processDirectory(
     console.log(`\nProcessing ${files.length} files...\n`);
   }
 
-  const spinner = options.quiet ? null : ora('Starting...').start();
+  // Use ProgressTracker for TTY, null for quiet/json mode
+  const tracker = (!options.quiet && !options.json) ? new ProgressTracker(files.length) : null;
 
   const result = await generateForBatch(files, {
     config,
@@ -229,37 +231,33 @@ async function processDirectory(
     force: options.force,
     dryRun: options.dryRun,
     onProgress: (info: ProgressInfo) => {
-      if (spinner && !options.quiet) {
-        const icon = info.status === 'success' ? '✓' : info.status === 'error' ? '✗' : info.status === 'skipped' ? '⏭' : '→';
-        spinner.text = `[${info.completed}/${info.total}] ${icon} ${path.basename(info.current)}`;
+      if (tracker) {
+        tracker.update({
+          ...info,
+          current: path.basename(info.current),
+        });
+        tracker.render();
       }
     },
   });
 
-  if (spinner) {
-    spinner.stop();
+  if (tracker) {
+    tracker.clear();
   }
 
   if (options.json) {
     console.log(JSON.stringify(result, null, 2));
   } else if (!options.quiet) {
-    console.log(`\nDone: ${result.total} files`);
+    // Print summary using the new formatter
+    console.log(formatSummary(
+      result.total,
+      result.succeeded,
+      result.failed,
+      result.skipped,
+      result.duration
+    ));
 
-    // Avoid division by zero for percentage calculations
-    const pct = (n: number) => result.total > 0 ? ((n / result.total) * 100).toFixed(1) : '0.0';
-
-    console.log(`  ✓ Succeeded: ${result.succeeded} (${pct(result.succeeded)}%)`);
-    if (result.skipped > 0) {
-      console.log(`  ⏭ Skipped: ${result.skipped} (${pct(result.skipped)}%)`);
-    }
-    if (result.failed > 0) {
-      console.log(`  ✗ Failed: ${result.failed} (${pct(result.failed)}%)`);
-    }
-
-    const avgTime = result.total > 0 ? (result.duration / result.total).toFixed(0) : '0';
-    console.log(`\nTime: ${(result.duration / 1000).toFixed(1)}s (avg ${avgTime}ms/file)`);
-
-    if (result.errors.length > 0 && !options.json) {
+    if (result.errors.length > 0) {
       console.log('\nErrors:');
       for (const error of result.errors.slice(0, MAX_ERRORS_TO_DISPLAY)) {
         console.log(`  ${path.basename(error.file)}: ${error.message}`);
@@ -295,7 +293,7 @@ async function writeErrorLog(
 ): Promise<void> {
   const errorLog = {
     timestamp: new Date().toISOString(),
-    version: '0.1.8',
+    version: '0.1.10',
     basePath,
     batch: {
       total: result.total,
