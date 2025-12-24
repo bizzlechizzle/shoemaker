@@ -373,3 +373,65 @@ Common causes:
 Black frame detection uses Sharp to analyze frame luminance. If it's not working:
 1. Check Sharp is properly installed
 2. Adjust threshold in frame-extractor.ts (default: avgLuminance < 10)
+
+---
+
+## XMP Pipeline Integration
+
+shoemaker is the **second stage** in the media processing pipeline, running after wake-n-blake and before visual-buffet.
+
+### Pipeline Order (CRITICAL)
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│  wake-n-blake   │ ──► │    shoemaker    │ ──► │  visual-buffet  │
+│   (import)      │     │  (thumbnails)   │     │   (ML tags)     │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+```
+
+**wake-n-blake MUST run first** to create the base XMP sidecar with provenance data.
+
+### Current XMP Implementation
+
+shoemaker writes thumbnail metadata to XMP sidecars using:
+- `XMP-dc:Source` - JSON payload prefixed with `shoemaker:`
+- `XMP-dc:Description` - Human-readable thumbnail list
+- `XMP-xmp:Label` - `shoemaker-managed` marker
+
+### Integration with wake-n-blake
+
+When processing files that already have wake-n-blake XMP sidecars:
+
+1. **ExifTool preserves namespaces** - shoemaker uses ExifTool which preserves unknown namespaces (like `wnb:`), so wake-n-blake data is NOT lost
+2. **Sidecar hash invalidation** - wake-n-blake's `wnb:SidecarHash` will become invalid after shoemaker modifies the XMP (this is expected behavior indicating modification)
+
+### TODO: Add Custody Events
+
+shoemaker should add a custody event to the chain when modifying XMP:
+
+```typescript
+// Future implementation in xmp-updater.ts
+await exiftool.write(xmpPath, {}, [
+  '-overwrite_original',
+  // Existing shoemaker fields...
+  `-XMP-wnb:EventCount+=1`,  // Increment event count
+  // Would need to append to CustodyChain (complex with ExifTool)
+]);
+```
+
+### TODO: Respect Related Files
+
+Check `wnb:RelationType` before processing to avoid duplicate work:
+- If `wnb:IsPrimaryFile=false`, consider skipping (thumbnail already generated for primary)
+- For Live Photos, generate thumbnail from the image, not the video
+
+### Namespace Migration (Future)
+
+Consider migrating from `dc:Source` hack to proper `shoemaker:` namespace:
+
+```
+Proposed Namespace URI: http://shoemaker.dev/xmp/1.0/
+Proposed Prefix: shoemaker
+```
+
+This would be cleaner and avoid overloading the Dublin Core `Source` field.
