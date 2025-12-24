@@ -3,6 +3,7 @@
  *
  * Updates XMP sidecar files with thumbnail metadata.
  * Uses a custom shoemaker namespace for thumbnail tracking.
+ * Supports batch mode for efficient bulk updates.
  */
 
 import fs from 'fs/promises';
@@ -10,6 +11,67 @@ import path from 'path';
 import { exiftool } from 'exiftool-vendored';
 import type { ThumbnailResult, VideoInfo, ProxyResult } from '../schemas/index.js';
 import { wrapError } from '../core/errors.js';
+
+// Batch queue for collecting XMP updates
+interface PendingXmpUpdate {
+  imagePath: string;
+  data: XmpUpdateData;
+}
+
+const pendingUpdates: PendingXmpUpdate[] = [];
+const BATCH_SIZE = 50;
+let batchTimer: ReturnType<typeof setTimeout> | null = null;
+const BATCH_TIMEOUT_MS = 5000; // 5 seconds
+
+/**
+ * Queue an XMP update for batch processing
+ */
+export function queueXmpUpdate(imagePath: string, data: XmpUpdateData): void {
+  pendingUpdates.push({ imagePath, data });
+
+  // If we've hit the batch size, flush immediately
+  if (pendingUpdates.length >= BATCH_SIZE) {
+    flushXmpUpdates();
+  } else if (!batchTimer) {
+    // Start a timer to flush after timeout
+    batchTimer = setTimeout(() => {
+      flushXmpUpdates();
+    }, BATCH_TIMEOUT_MS);
+  }
+}
+
+/**
+ * Flush all pending XMP updates
+ */
+export async function flushXmpUpdates(): Promise<void> {
+  if (batchTimer) {
+    clearTimeout(batchTimer);
+    batchTimer = null;
+  }
+
+  if (pendingUpdates.length === 0) {
+    return;
+  }
+
+  // Take all pending updates
+  const updates = pendingUpdates.splice(0, pendingUpdates.length);
+
+  // Process all updates concurrently (ExifTool handles its own queuing)
+  await Promise.all(
+    updates.map(({ imagePath, data }) =>
+      updateXmpSidecar(imagePath, data).catch(() => {
+        // Log but don't fail the batch for individual errors
+      })
+    )
+  );
+}
+
+/**
+ * Get count of pending XMP updates
+ */
+export function getPendingXmpCount(): number {
+  return pendingUpdates.length;
+}
 
 export interface XmpUpdateData {
   thumbnails: ThumbnailResult[];

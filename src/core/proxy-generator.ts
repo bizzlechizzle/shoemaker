@@ -10,11 +10,37 @@ import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs/promises';
 import path from 'path';
+import PQueue from 'p-queue';
 import { probeVideo } from './ffprobe.js';
 import { ShoemakerError, ErrorCode } from './errors.js';
 import type { ProxyConfig, ProxySizeConfig, ProxyResult, VideoInfo } from '../schemas/index.js';
 
 const execFileAsync = promisify(execFile);
+
+// Hardware encoder concurrency limits (most GPUs max out at 2-3 simultaneous encodes)
+const HW_ENCODER_CONCURRENCY: Record<string, number> = {
+  videotoolbox: 2,
+  nvenc: 3,      // NVIDIA typically allows 3 sessions
+  vaapi: 2,
+  qsv: 2,
+  none: 4,      // Software can run more parallel
+};
+
+// Global queue for hardware encoder access
+let hwEncoderQueue: PQueue | null = null;
+let currentHwType: string | null = null;
+
+/**
+ * Get or create hardware encoder queue
+ */
+function getHwEncoderQueue(hwType: string): PQueue {
+  if (!hwEncoderQueue || currentHwType !== hwType) {
+    const concurrency = HW_ENCODER_CONCURRENCY[hwType] ?? 2;
+    hwEncoderQueue = new PQueue({ concurrency });
+    currentHwType = hwType;
+  }
+  return hwEncoderQueue;
+}
 
 // Hardware acceleration encoder mappings
 const HW_ENCODERS: Record<string, Record<string, string>> = {
@@ -284,6 +310,12 @@ export async function generateProxy(
   // VFR to CFR conversion (variable frame rate breaks editing software)
   args.push('-vsync', 'cfr');
 
+  // FPS reduction for high frame rate sources (60fps → 24fps for smaller proxies)
+  // Only reduce if source is significantly higher than 30fps
+  if (config.targetFps && videoInfo.frameRate > 35) {
+    args.push('-r', String(config.targetFps));
+  }
+
   // Color space tagging for proper display (bt709 for SDR content)
   if (!videoInfo.isHdr) {
     args.push('-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709');
@@ -401,42 +433,59 @@ export async function generateProxy(
 
 /**
  * Generate all configured proxy sizes for a video
+ * Uses hardware encoder queue to limit concurrent GPU encodes
  */
 export async function generateProxies(
   inputPath: string,
   options: ProxyGeneratorOptions
 ): Promise<ProxyResult[]> {
   const { config, outputDir, stem } = options;
-  const results: ProxyResult[] = [];
 
   // Create proxies subdirectory
   const proxyDir = path.join(outputDir, 'proxies');
   await fs.mkdir(proxyDir, { recursive: true });
 
-  // Generate each configured size
+  // Determine which sizes to generate
+  const sizesToGenerate: Array<[string, ProxySizeConfig]> = [];
   for (const [sizeName, sizeConfig] of Object.entries(config.sizes)) {
     // Skip if target height is larger than source
     if (sizeConfig.height >= options.videoInfo.height) {
       continue;
     }
-
-    const outputPath = path.join(
-      proxyDir,
-      `${stem}_proxy_${sizeConfig.height}p.${config.format}`
-    );
-
-    const result = await generateProxy(
-      inputPath,
-      outputPath,
-      sizeName,
-      sizeConfig,
-      options
-    );
-
-    results.push(result);
+    sizesToGenerate.push([sizeName, sizeConfig]);
   }
 
-  return results;
+  if (sizesToGenerate.length === 0) {
+    return [];
+  }
+
+  // Detect encoder type to get appropriate queue
+  const { hwType } = await selectEncoder(config.codec, config.hwAccel);
+  const queue = getHwEncoderQueue(hwType);
+
+  // Queue all proxy generation tasks
+  const proxyPromises = sizesToGenerate.map(([sizeName, sizeConfig]) => {
+    return queue.add(async () => {
+      const outputPath = path.join(
+        proxyDir,
+        `${stem}_proxy_${sizeConfig.height}p.${config.format}`
+      );
+
+      return generateProxy(
+        inputPath,
+        outputPath,
+        sizeName,
+        sizeConfig,
+        options
+      );
+    });
+  });
+
+  // Wait for all proxies to complete
+  const results = await Promise.all(proxyPromises);
+
+  // Filter out undefined results (from queue errors)
+  return results.filter((r): r is ProxyResult => r !== undefined);
 }
 
 /**

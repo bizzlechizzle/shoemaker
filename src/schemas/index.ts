@@ -146,6 +146,7 @@ export const ProxyConfigSchema = z.object({
   deinterlace: z.boolean().default(true),
   fastStart: z.boolean().default(true), // movflags +faststart for streaming
   lutPath: z.string().optional(), // Path to .cube LUT file for color grading
+  targetFps: z.number().int().min(12).max(60).optional(), // Target FPS for high frame rate sources (e.g., 24 for 60fps→24fps)
 });
 
 // Video configuration (must be defined before ConfigSchema)

@@ -201,18 +201,20 @@ export async function extractFrameAtPercent(
 
 /**
  * Extract multiple frames at specified percentages
- * Uses a single FFmpeg call with select filter for efficiency
+ * Uses batch extraction with FFmpeg for efficiency when possible
  */
 export async function extractMultipleFrames(
   videoPath: string,
   percentages: number[],
-  options: FrameExtractionOptions = {}
+  options: FrameExtractionOptions = {},
+  videoInfo?: VideoInfo
 ): Promise<ExtractedFrame[]> {
-  const videoInfo = await probeVideo(videoPath);
-  const filterChain = buildFilterChain(videoInfo, options);
+  // Use provided videoInfo or probe (allows caller to avoid re-probe)
+  const info = videoInfo ?? await probeVideo(videoPath);
+  const filterChain = buildFilterChain(info, options);
 
-  // Calculate frame numbers for each percentage
-  const seekTimes = percentages.map(pct => calculateSeekTime(videoInfo.duration, pct));
+  // Calculate seek times for each percentage
+  const seekTimes = percentages.map(pct => calculateSeekTime(info.duration, pct));
 
   // Create temp directory for output
   const tempDir = path.join(os.tmpdir(), `shoemaker-${crypto.randomBytes(8).toString('hex')}`);
@@ -221,73 +223,52 @@ export async function extractMultipleFrames(
   const frames: ExtractedFrame[] = [];
 
   try {
-    // Extract frames one at a time for reliability
-    // (batch extraction with select filter is faster but less reliable for seeking)
-    for (let i = 0; i < seekTimes.length; i++) {
-      const seekTime = seekTimes[i] ?? 0;
-      const outputPath = path.join(tempDir, `frame_${i.toString().padStart(3, '0')}.jpg`);
+    // Try batch extraction first (faster), fall back to sequential if it fails
+    const batchSuccess = await tryBatchExtraction(
+      videoPath, seekTimes, tempDir, filterChain, info, options
+    );
 
-      const args: string[] = [
-        '-ss', String(seekTime),
-        '-i', videoPath,
-        '-vframes', '1',
-      ];
-
-      if (filterChain.filters.length > 0) {
-        args.push('-vf', filterChain.filters.join(','));
-      }
-
-      args.push(
-        '-q:v', '2',
-        '-y',
-        outputPath
-      );
-
-      await execFileAsync('ffmpeg', args, {
-        timeout: 30000,
-      });
-
-      let buffer = await fs.readFile(outputPath);
-      let actualPosition = seekTime;
-
-      // Check for black frame and try adjacent positions
-      if (options.skipBlackFrames !== false) {
-        let attempts = 0;
-        const maxAttempts = 3;
-        const offsetStep = videoInfo.duration * BLACK_FRAME_OFFSET_STEP;
-
-        while (await isBlackFrame(buffer) && attempts < maxAttempts) {
-          attempts++;
-          const newTime = seekTime + (offsetStep * attempts);
-
-          if (newTime >= videoInfo.duration * (1 - SAFE_ZONE_MARGIN)) break;
-
-          await execFileAsync('ffmpeg', [
-            '-ss', String(newTime),
-            '-i', videoPath,
-            '-vframes', '1',
-            ...(filterChain.filters.length > 0 ? ['-vf', filterChain.filters.join(',')] : []),
-            '-q:v', '2',
-            '-y',
-            outputPath,
-          ], { timeout: 30000 });
-
-          buffer = await fs.readFile(outputPath);
-          actualPosition = newTime;
+    if (batchSuccess) {
+      // Read batch-extracted frames
+      for (let i = 0; i < seekTimes.length; i++) {
+        const outputPath = path.join(tempDir, `frame_${i.toString().padStart(3, '0')}.jpg`);
+        try {
+          const buffer = await fs.readFile(outputPath);
+          if (buffer.length > 0) {
+            const metadata = await sharp(buffer).metadata();
+            frames.push({
+              buffer,
+              width: metadata.width ?? info.width,
+              height: metadata.height ?? info.height,
+              position: seekTimes[i] ?? 0,
+              wasDeinterlaced: filterChain.wasDeinterlaced,
+              wasRotated: filterChain.wasRotated,
+            });
+          }
+        } catch {
+          // Frame not extracted, will be handled below
         }
       }
-
-      const metadata = await sharp(buffer).metadata();
-
-      frames.push({
-        buffer,
-        width: metadata.width ?? videoInfo.width,
-        height: metadata.height ?? videoInfo.height,
-        position: actualPosition,
-        wasDeinterlaced: filterChain.wasDeinterlaced,
-        wasRotated: filterChain.wasRotated,
-      });
     }
+
+    // Fill in any missing frames with sequential extraction
+    if (frames.length < seekTimes.length) {
+      const extractedPositions = new Set(frames.map(f => f.position));
+      for (let i = 0; i < seekTimes.length; i++) {
+        const seekTime = seekTimes[i] ?? 0;
+        if (extractedPositions.has(seekTime)) continue;
+
+        const frame = await extractFrameWithBlackSkip(
+          videoPath, seekTime, tempDir, i, filterChain, info, options
+        );
+        if (frame) {
+          frames.push(frame);
+        }
+      }
+    }
+
+    // Sort frames by position to maintain order
+    frames.sort((a, b) => a.position - b.position);
 
     return frames;
   } finally {
@@ -301,13 +282,145 @@ export async function extractMultipleFrames(
 }
 
 /**
+ * Try batch extraction using FFmpeg select filter (faster but less reliable)
+ */
+async function tryBatchExtraction(
+  videoPath: string,
+  seekTimes: number[],
+  tempDir: string,
+  filterChain: FilterChain,
+  videoInfo: VideoInfo,
+  _options: FrameExtractionOptions
+): Promise<boolean> {
+  try {
+    // Build select filter expression for all timestamps
+    // Using time-based selection: select='gte(t,T1)*lt(t,T1+0.1)+gte(t,T2)*lt(t,T2+0.1)+...'
+    const selectParts = seekTimes.map(t => `gte(t,${t.toFixed(3)})*lt(t,${t.toFixed(3) + 0.1})`);
+    const selectExpr = selectParts.join('+');
+
+    // Build complete filter chain
+    const filters: string[] = [];
+
+    // Add existing filters (deinterlace, HDR, etc.)
+    if (filterChain.filters.length > 0) {
+      filters.push(...filterChain.filters);
+    }
+
+    // Add frame selection
+    filters.push(`select='${selectExpr}'`);
+    filters.push('setpts=N/FRAME_RATE/TB');
+
+    const args: string[] = [
+      '-i', videoPath,
+      '-vf', filters.join(','),
+      '-vsync', '0',
+      '-q:v', '2',
+      '-frame_pts', '1',
+      path.join(tempDir, 'frame_%03d.jpg'),
+    ];
+
+    // Use adaptive timeout based on video duration
+    const timeout = Math.max(30000, Math.min(videoInfo.duration * 500, 120000));
+
+    await execFileAsync('ffmpeg', args, {
+      timeout,
+      maxBuffer: 50 * 1024 * 1024,
+    });
+
+    // Verify we got at least some frames
+    const files = await fs.readdir(tempDir);
+    return files.filter(f => f.startsWith('frame_')).length > 0;
+  } catch {
+    // Batch extraction failed, will fall back to sequential
+    return false;
+  }
+}
+
+/**
+ * Extract a single frame with black frame skip logic
+ */
+async function extractFrameWithBlackSkip(
+  videoPath: string,
+  seekTime: number,
+  tempDir: string,
+  index: number,
+  filterChain: FilterChain,
+  videoInfo: VideoInfo,
+  options: FrameExtractionOptions
+): Promise<ExtractedFrame | null> {
+  const outputPath = path.join(tempDir, `frame_seq_${index.toString().padStart(3, '0')}.jpg`);
+
+  // Use keyframe-aware seeking for faster extraction
+  const args: string[] = [
+    '-ss', String(seekTime),
+    '-i', videoPath,
+    '-vframes', '1',
+  ];
+
+  if (filterChain.filters.length > 0) {
+    args.push('-vf', filterChain.filters.join(','));
+  }
+
+  args.push('-q:v', '2', '-y', outputPath);
+
+  try {
+    await execFileAsync('ffmpeg', args, { timeout: 30000 });
+
+    let buffer = await fs.readFile(outputPath);
+    let actualPosition = seekTime;
+
+    // Check for black frame and try adjacent positions
+    if (options.skipBlackFrames !== false) {
+      let attempts = 0;
+      const maxAttempts = 3;
+      const offsetStep = videoInfo.duration * BLACK_FRAME_OFFSET_STEP;
+
+      while (await isBlackFrame(buffer) && attempts < maxAttempts) {
+        attempts++;
+        const newTime = seekTime + (offsetStep * attempts);
+
+        if (newTime >= videoInfo.duration * (1 - SAFE_ZONE_MARGIN)) break;
+
+        await execFileAsync('ffmpeg', [
+          '-ss', String(newTime),
+          '-i', videoPath,
+          '-vframes', '1',
+          ...(filterChain.filters.length > 0 ? ['-vf', filterChain.filters.join(',')] : []),
+          '-q:v', '2',
+          '-y',
+          outputPath,
+        ], { timeout: 30000 });
+
+        buffer = await fs.readFile(outputPath);
+        actualPosition = newTime;
+      }
+    }
+
+    const metadata = await sharp(buffer).metadata();
+
+    return {
+      buffer,
+      width: metadata.width ?? videoInfo.width,
+      height: metadata.height ?? videoInfo.height,
+      position: actualPosition,
+      wasDeinterlaced: filterChain.wasDeinterlaced,
+      wasRotated: filterChain.wasRotated,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Generate a timeline strip (horizontal concatenation of frames)
+ * Accepts optional videoInfo to avoid re-probing
  */
 export async function generateTimelineStrip(
   videoPath: string,
   frameCount: number,
   frameHeight: number,
-  options: FrameExtractionOptions = {}
+  options: FrameExtractionOptions = {},
+  videoInfo?: VideoInfo
 ): Promise<Buffer> {
   // Calculate evenly distributed percentages
   const percentages: number[] = [];
@@ -315,8 +428,8 @@ export async function generateTimelineStrip(
     percentages.push((i / (frameCount - 1)) * 100);
   }
 
-  // Extract all frames
-  const frames = await extractMultipleFrames(videoPath, percentages, options);
+  // Extract all frames (pass videoInfo to avoid re-probe)
+  const frames = await extractMultipleFrames(videoPath, percentages, options, videoInfo);
 
   if (frames.length === 0) {
     throw new ShoemakerError(
@@ -326,35 +439,41 @@ export async function generateTimelineStrip(
     );
   }
 
-  // Resize all frames to consistent height, maintaining aspect ratio
-  const resizedFrames: { buffer: Buffer; width: number }[] = [];
+  // Process frames sequentially to optimize memory
+  // Calculate dimensions first, then process one at a time
+  const frameDimensions: { width: number }[] = [];
+  const resizedBuffers: Buffer[] = [];
 
   for (const frame of frames) {
     const aspectRatio = frame.width / frame.height;
     const newWidth = Math.round(frameHeight * aspectRatio);
+    frameDimensions.push({ width: newWidth });
 
     const resized = await sharp(frame.buffer)
       .resize(newWidth, frameHeight, { fit: 'fill' })
       .jpeg({ quality: 85 })
       .toBuffer();
 
-    resizedFrames.push({ buffer: resized, width: newWidth });
+    resizedBuffers.push(resized);
+
+    // Release original frame buffer immediately for GC
+    frame.buffer = Buffer.alloc(0);
   }
 
   // Calculate total strip dimensions
-  const totalWidth = resizedFrames.reduce((sum, f) => sum + f.width, 0);
+  const totalWidth = frameDimensions.reduce((sum, f) => sum + f.width, 0);
 
-  // Create composite image
+  // Create composite image with all frames
   const composites: sharp.OverlayOptions[] = [];
   let xOffset = 0;
 
-  for (const frame of resizedFrames) {
+  for (let i = 0; i < resizedBuffers.length; i++) {
     composites.push({
-      input: frame.buffer,
+      input: resizedBuffers[i],
       left: xOffset,
       top: 0,
     });
-    xOffset += frame.width;
+    xOffset += frameDimensions[i]?.width ?? 0;
   }
 
   // Create blank canvas and composite frames
@@ -375,34 +494,136 @@ export async function generateTimelineStrip(
 
 /**
  * Extract poster frame (best single frame for thumbnail)
+ * Accepts optional videoInfo to avoid re-probing
  */
 export async function extractPosterFrame(
   videoPath: string,
   config: VideoConfig,
-  options: FrameExtractionOptions = {}
+  options: FrameExtractionOptions = {},
+  videoInfo?: VideoInfo
 ): Promise<ExtractedFrame> {
-  return extractFrameAtPercent(videoPath, config.posterPosition, {
+  const info = videoInfo ?? await probeVideo(videoPath);
+  const seekTime = calculateSeekTime(info.duration, config.posterPosition);
+  const filterChain = buildFilterChain(info, {
     deinterlace: config.autoDeinterlace,
     rotate: config.autoRotate,
     skipBlackFrames: config.skipBlackFrames,
     hdrToneMap: config.hdrToneMap,
     ...options,
   });
+
+  // Build FFmpeg command
+  const args: string[] = [
+    '-ss', String(seekTime),
+    '-i', videoPath,
+    '-vframes', '1',
+  ];
+
+  if (filterChain.filters.length > 0) {
+    args.push('-vf', filterChain.filters.join(','));
+  }
+
+  args.push('-f', 'image2pipe', '-vcodec', 'mjpeg', '-q:v', '2', 'pipe:1');
+
+  try {
+    const { stdout } = await execFileAsync('ffmpeg', args, {
+      encoding: 'buffer',
+      maxBuffer: 50 * 1024 * 1024,
+      timeout: 30000,
+    });
+
+    if (!stdout || stdout.length === 0) {
+      throw new ShoemakerError(
+        `No poster frame extracted at ${seekTime}s`,
+        ErrorCode.DECODE_FAILED,
+        videoPath
+      );
+    }
+
+    const metadata = await sharp(stdout).metadata();
+
+    return {
+      buffer: stdout,
+      width: metadata.width ?? info.width,
+      height: metadata.height ?? info.height,
+      position: seekTime,
+      wasDeinterlaced: filterChain.wasDeinterlaced,
+      wasRotated: filterChain.wasRotated,
+    };
+  } catch (err) {
+    if (err instanceof ShoemakerError) throw err;
+    throw new ShoemakerError(
+      `Failed to extract poster frame: ${(err as Error).message}`,
+      ErrorCode.DECODE_FAILED,
+      videoPath
+    );
+  }
 }
 
 /**
  * Extract preview frame (larger single frame for detail view)
+ * Accepts optional videoInfo to avoid re-probing
  */
 export async function extractPreviewFrame(
   videoPath: string,
   config: VideoConfig,
-  options: FrameExtractionOptions = {}
+  options: FrameExtractionOptions = {},
+  videoInfo?: VideoInfo
 ): Promise<ExtractedFrame> {
-  return extractFrameAtPercent(videoPath, config.previewPosition, {
+  const info = videoInfo ?? await probeVideo(videoPath);
+  const seekTime = calculateSeekTime(info.duration, config.previewPosition);
+  const filterChain = buildFilterChain(info, {
     deinterlace: config.autoDeinterlace,
     rotate: config.autoRotate,
     skipBlackFrames: config.skipBlackFrames,
     hdrToneMap: config.hdrToneMap,
     ...options,
   });
+
+  // Build FFmpeg command
+  const args: string[] = [
+    '-ss', String(seekTime),
+    '-i', videoPath,
+    '-vframes', '1',
+  ];
+
+  if (filterChain.filters.length > 0) {
+    args.push('-vf', filterChain.filters.join(','));
+  }
+
+  args.push('-f', 'image2pipe', '-vcodec', 'mjpeg', '-q:v', '2', 'pipe:1');
+
+  try {
+    const { stdout } = await execFileAsync('ffmpeg', args, {
+      encoding: 'buffer',
+      maxBuffer: 50 * 1024 * 1024,
+      timeout: 30000,
+    });
+
+    if (!stdout || stdout.length === 0) {
+      throw new ShoemakerError(
+        `No preview frame extracted at ${seekTime}s`,
+        ErrorCode.DECODE_FAILED,
+        videoPath
+      );
+    }
+
+    const metadata = await sharp(stdout).metadata();
+
+    return {
+      buffer: stdout,
+      width: metadata.width ?? info.width,
+      height: metadata.height ?? info.height,
+      position: seekTime,
+      wasDeinterlaced: filterChain.wasDeinterlaced,
+      wasRotated: filterChain.wasRotated,
+    };
+  } catch (err) {
+    if (err instanceof ShoemakerError) throw err;
+    throw new ShoemakerError(
+      `Failed to extract preview frame: ${(err as Error).message}`,
+      ErrorCode.DECODE_FAILED,
+      videoPath
+    );
+  }
 }

@@ -119,6 +119,7 @@ export async function generateThumbnail(
 
 /**
  * Generate multiple thumbnail sizes from a single source
+ * Uses Sharp .clone() to share the decoded input across all sizes for efficiency
  */
 export async function generateThumbnails(
   input: Buffer | string,
@@ -129,27 +130,81 @@ export async function generateThumbnails(
 ): Promise<ThumbnailResult[]> {
   const results: ThumbnailResult[] = [];
 
+  // Ensure output directory exists (once for all sizes)
+  await fs.mkdir(outputDir, { recursive: true });
+
+  // Create base pipeline with common operations (decode once, reuse for all sizes)
+  let basePipeline = sharp(input);
+
+  // Auto-rotate based on EXIF orientation (default: true)
+  if (options.autoRotate !== false) {
+    basePipeline = basePipeline.rotate();
+  }
+
+  // Convert to sRGB color space (common for all outputs)
+  basePipeline = basePipeline.toColorspace('srgb');
+
   // Process sizes in order (largest first for better quality)
   const sortedSizes = Object.entries(sizes).sort((a, b) => b[1].width - a[1].width);
 
-  for (const [sizeName, sizeConfig] of sortedSizes) {
+  // Process all sizes using cloned pipelines (shares decoded input)
+  const processPromises = sortedSizes.map(async ([sizeName, sizeConfig]) => {
     const ext = sizeConfig.format === 'jpeg' ? 'jpg' : sizeConfig.format;
     const outputPath = path.join(outputDir, `${stem}_${sizeName}_${sizeConfig.width}.${ext}`);
 
-    const result = await generateThumbnail(input, outputPath, {
-      width: sizeConfig.width,
-      height: sizeConfig.height,
-      format: sizeConfig.format,
-      quality: sizeConfig.quality,
-      allowUpscale: sizeConfig.allowUpscale,
-      stripExif: options.stripExif,
-      autoRotate: options.autoRotate,
+    // Clone the base pipeline (shares decoded input buffer)
+    let pipeline = basePipeline.clone();
+
+    // Resize with aspect ratio preservation
+    pipeline = pipeline.resize(sizeConfig.width, sizeConfig.height ?? sizeConfig.width, {
+      fit: 'inside',
+      withoutEnlargement: sizeConfig.allowUpscale !== true,
     });
 
-    results.push({
-      ...result,
+    // Set output format with quality
+    switch (sizeConfig.format) {
+      case 'webp':
+        pipeline = pipeline.webp({ quality: sizeConfig.quality });
+        break;
+      case 'jpeg':
+        pipeline = pipeline.jpeg({ quality: sizeConfig.quality, mozjpeg: true });
+        break;
+      case 'png':
+        pipeline = pipeline.png({ compressionLevel: 9 });
+        break;
+      case 'avif':
+        pipeline = pipeline.avif({ quality: sizeConfig.quality });
+        break;
+    }
+
+    // Embed sRGB ICC profile
+    pipeline = pipeline.withMetadata({ icc: 'srgb' });
+
+    // Process and write to disk
+    const buffer = await pipeline.toBuffer();
+    await fs.writeFile(outputPath, buffer);
+
+    const metadata = await sharp(buffer).metadata();
+
+    return {
       size: sizeName,
-    });
+      width: metadata.width ?? sizeConfig.width,
+      height: metadata.height ?? sizeConfig.height ?? sizeConfig.width,
+      format: sizeConfig.format,
+      path: outputPath,
+      bytes: buffer.length,
+    } as ThumbnailResult;
+  });
+
+  // Wait for all sizes to complete
+  const processedResults = await Promise.all(processPromises);
+
+  // Sort results to match original order (largest first)
+  for (const [sizeName] of sortedSizes) {
+    const result = processedResults.find(r => r.size === sizeName);
+    if (result) {
+      results.push(result);
+    }
   }
 
   return results;

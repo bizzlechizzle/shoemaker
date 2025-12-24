@@ -3,6 +3,7 @@
  *
  * Extracts embedded previews from RAW files using ExifTool.
  * Analyzes available previews and selects the best one.
+ * Includes LRU cache for preview metadata to avoid repeated analysis.
  */
 
 import { exiftool } from 'exiftool-vendored';
@@ -14,6 +15,47 @@ import { ShoemakerError, ErrorCode, wrapError } from './errors.js';
 const PREVIEW_TAGS = ['JpgFromRaw', 'PreviewImage', 'OtherImage', 'ThumbnailImage'] as const;
 type PreviewTag = typeof PREVIEW_TAGS[number];
 
+// LRU cache for preview analysis results
+const PREVIEW_CACHE_MAX_SIZE = 1000;
+const previewCache = new Map<string, { analysis: PreviewAnalysis; timestamp: number }>();
+
+/**
+ * Get cached preview analysis or null if not cached
+ */
+function getCachedAnalysis(filePath: string): PreviewAnalysis | null {
+  const cached = previewCache.get(filePath);
+  if (cached) {
+    // Check if cache is still valid (15 minutes)
+    if (Date.now() - cached.timestamp < 15 * 60 * 1000) {
+      return cached.analysis;
+    }
+    // Expired, remove from cache
+    previewCache.delete(filePath);
+  }
+  return null;
+}
+
+/**
+ * Cache a preview analysis result
+ */
+function cacheAnalysis(filePath: string, analysis: PreviewAnalysis): void {
+  // Evict oldest entries if cache is full
+  if (previewCache.size >= PREVIEW_CACHE_MAX_SIZE) {
+    const oldestKey = previewCache.keys().next().value;
+    if (oldestKey) {
+      previewCache.delete(oldestKey);
+    }
+  }
+  previewCache.set(filePath, { analysis, timestamp: Date.now() });
+}
+
+/**
+ * Clear the preview cache (useful for testing or memory management)
+ */
+export function clearPreviewCache(): void {
+  previewCache.clear();
+}
+
 /**
  * Type guard: check if value is a valid number
  */
@@ -23,8 +65,15 @@ function isNumber(value: unknown): value is number {
 
 /**
  * Analyze embedded previews in an image file
+ * Uses cache to avoid repeated ExifTool calls for the same file
  */
 export async function analyzeEmbeddedPreviews(filePath: string): Promise<PreviewAnalysis> {
+  // Check cache first
+  const cached = getCachedAnalysis(filePath);
+  if (cached) {
+    return cached;
+  }
+
   try {
     const tags = await exiftool.read(filePath);
 
@@ -47,7 +96,7 @@ export async function analyzeEmbeddedPreviews(filePath: string): Promise<Preview
     // Determine if RAW decode is needed (best preview < minimum size)
     const needsRawDecode = !bestPreview || bestPreview.width < DEFAULT_MIN_PREVIEW_SIZE;
 
-    return {
+    const analysis: PreviewAnalysis = {
       filePath,
       jpgFromRaw,
       previewImage,
@@ -56,6 +105,11 @@ export async function analyzeEmbeddedPreviews(filePath: string): Promise<Preview
       bestPreview,
       needsRawDecode,
     };
+
+    // Cache the result
+    cacheAnalysis(filePath, analysis);
+
+    return analysis;
   } catch (err) {
     throw wrapError(err, filePath);
   }

@@ -15,7 +15,7 @@ import { generateThumbnails as resizeThumbnails, generateThumbnail } from '../co
 import { getBehavior, expandPath } from '../core/config.js';
 import { ShoemakerError, ErrorCode, wrapError, shouldStopBatch, shouldReduceConcurrency } from '../core/errors.js';
 import { decodeRawFile as decodeRaw, type DecodeOptions } from '../core/decoder.js';
-import { updateXmpSidecar, hasExistingThumbnails } from './xmp-updater.js';
+import { updateXmpSidecar, hasExistingThumbnails, queueXmpUpdate, flushXmpUpdates } from './xmp-updater.js';
 import { probeVideo, checkFfprobeAvailable } from '../core/ffprobe.js';
 import { extractPosterFrame, extractPreviewFrame, generateTimelineStrip } from '../core/frame-extractor.js';
 import { generateProxies } from '../core/proxy-generator.js';
@@ -25,6 +25,7 @@ export interface GenerateOptions {
   preset: Preset;
   force?: boolean;
   dryRun?: boolean;
+  batchMode?: boolean; // When true, queue XMP updates instead of writing immediately
   onProgress?: (info: ProgressInfo) => void;
 }
 
@@ -90,8 +91,8 @@ async function generateVideoThumbnails(
   const thumbnails: ThumbnailResult[] = [];
   const videoConfig = config.video;
 
-  // Extract poster frame
-  const posterFrame = await extractPosterFrame(filePath, videoConfig);
+  // Extract poster frame (pass videoInfo to avoid re-probe)
+  const posterFrame = await extractPosterFrame(filePath, videoConfig, {}, videoInfo);
   const posterResult = await generateThumbnail(
     posterFrame.buffer,
     path.join(outputDir, `${stem}_poster_${config.sizes.thumb?.width ?? 300}.webp`),
@@ -103,8 +104,8 @@ async function generateVideoThumbnails(
   );
   thumbnails.push({ ...posterResult, size: 'poster' });
 
-  // Extract preview frame
-  const previewFrame = await extractPreviewFrame(filePath, videoConfig);
+  // Extract preview frame (pass videoInfo to avoid re-probe)
+  const previewFrame = await extractPreviewFrame(filePath, videoConfig, {}, videoInfo);
   const previewResult = await generateThumbnail(
     previewFrame.buffer,
     path.join(outputDir, `${stem}_preview_${config.sizes.preview?.width ?? 1600}.webp`),
@@ -116,7 +117,7 @@ async function generateVideoThumbnails(
   );
   thumbnails.push({ ...previewResult, size: 'preview' });
 
-  // Generate timeline strip
+  // Generate timeline strip (pass videoInfo to avoid re-probe)
   const timelineBuffer = await generateTimelineStrip(
     filePath,
     videoConfig.timelineFrames,
@@ -126,7 +127,8 @@ async function generateVideoThumbnails(
       rotate: videoConfig.autoRotate,
       skipBlackFrames: videoConfig.skipBlackFrames,
       hdrToneMap: videoConfig.hdrToneMap,
-    }
+    },
+    videoInfo
   );
   const timelinePath = path.join(outputDir, `${stem}_timeline.jpg`);
   await fs.writeFile(timelinePath, timelineBuffer);
@@ -161,12 +163,17 @@ async function generateVideoThumbnails(
 
   // Update XMP sidecar with video metadata
   if (config.xmp.updateSidecars) {
-    await updateXmpSidecar(filePath, {
+    const xmpData = {
       thumbnails,
-      method: 'video',
+      method: 'video' as const,
       videoInfo,
       proxies,
-    });
+    };
+    if (options.batchMode) {
+      queueXmpUpdate(filePath, xmpData);
+    } else {
+      await updateXmpSidecar(filePath, xmpData);
+    }
   }
 
   return {
@@ -309,10 +316,15 @@ export async function generateForFile(
 
   // Update XMP sidecar
   if (config.xmp.updateSidecars) {
-    await updateXmpSidecar(filePath, {
+    const xmpData = {
       thumbnails,
       method,
-    });
+    };
+    if (options.batchMode) {
+      queueXmpUpdate(filePath, xmpData);
+    } else {
+      await updateXmpSidecar(filePath, xmpData);
+    }
   }
 
   return {
@@ -351,7 +363,7 @@ export async function generateForBatch(
       onProgress?.(progressInfo);
 
       try {
-        const result = await generateForFile(file, options);
+        const result = await generateForFile(file, { ...options, batchMode: true });
         completed++;
         results.push({ file, result });
 
@@ -390,6 +402,9 @@ export async function generateForBatch(
   }
 
   await queue.onIdle();
+
+  // Flush any pending XMP updates
+  await flushXmpUpdates();
 
   // Compile batch result
   const succeeded = results.filter(r => r.result && !r.result.warnings.some(w => w.includes('Skipped'))).length;
