@@ -14,7 +14,7 @@ import { analyzeEmbeddedPreviews, extractBestPreview, isRawFormat, isDecodedForm
 import { generateThumbnails as resizeThumbnails, generateThumbnail } from '../core/resizer.js';
 import { getBehavior, expandPath } from '../core/config.js';
 import { ShoemakerError, ErrorCode, wrapError, shouldStopBatch, shouldReduceConcurrency } from '../core/errors.js';
-import { decodeRawFile as decodeRaw, type DecodeOptions } from '../core/decoder.js';
+import { decodeRawFile as decodeRaw, decodeHeic, isHeicDecodingAvailable, type DecodeOptions } from '../core/decoder.js';
 import { updateXmpSidecar, hasExistingThumbnails, queueXmpUpdate, flushXmpUpdates } from './xmp-updater.js';
 import { probeVideo, checkFfprobeAvailable } from '../core/ffprobe.js';
 import { extractPosterFrame, extractPreviewFrame, generateTimelineStrip } from '../core/frame-extractor.js';
@@ -226,8 +226,39 @@ export async function generateForFile(
   let method: 'extracted' | 'decoded' | 'direct';
 
   if (isDecodedFormat(filePath)) {
-    // Already decoded (JPEG, PNG, etc) - read directly
-    sourceBuffer = await fs.readFile(filePath);
+    // Already decoded (JPEG, PNG, HEIC, etc) - read directly
+    // HEIC may need special handling if sharp's libheif lacks x265 codec
+    const ext = path.extname(filePath).toLowerCase();
+    const isHeic = ext === '.heic' || ext === '.heif';
+
+    if (isHeic) {
+      // Try sharp first, fall back to sips on macOS if it fails
+      // Note: sharp.metadata() can succeed while pixel decode fails, so test actual resize
+      try {
+        sourceBuffer = await fs.readFile(filePath);
+        // Test that sharp can actually decode pixels (metadata succeeds but decode may fail)
+        const sharp = (await import('sharp')).default;
+        await sharp(sourceBuffer).resize(100).jpeg().toBuffer();
+        method = 'direct';
+      } catch (sharpErr) {
+        // Sharp failed (likely missing HEVC codec), try sips on macOS
+        if (isHeicDecodingAvailable()) {
+          sourceBuffer = await decodeHeic(filePath, { quality: 95 });
+          method = 'decoded'; // Mark as decoded since we converted via sips
+        } else {
+          throw new ShoemakerError(
+            `HEIC decode failed: sharp lacks HEVC codec and sips unavailable (not macOS)`,
+            ErrorCode.DECODE_FAILED,
+            filePath
+          );
+        }
+      }
+    } else {
+      // Standard decoded format (JPEG, PNG, etc) - read directly
+      sourceBuffer = await fs.readFile(filePath);
+      method = 'direct';
+    }
+
     // Check for empty file
     if (sourceBuffer.length === 0) {
       throw new ShoemakerError(
@@ -236,7 +267,6 @@ export async function generateForFile(
         filePath
       );
     }
-    method = 'direct';
   } else if (isRawFormat(filePath)) {
     // RAW file - check for empty file before expensive operations
     const stats = await fs.stat(filePath);

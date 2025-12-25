@@ -47,7 +47,7 @@ interface DecoderInfo {
 }
 
 // Security: whitelist of allowed decoder commands
-const ALLOWED_COMMANDS = new Set(['rawtherapee-cli', 'darktable-cli', 'dcraw', 'convert']);
+const ALLOWED_COMMANDS = new Set(['rawtherapee-cli', 'darktable-cli', 'dcraw', 'convert', 'sips']);
 
 // Cache decoder availability
 let decoderCache: Map<DecoderType, DecoderInfo> | null = null;
@@ -399,6 +399,78 @@ async function decodeWithDcraw(filePath: string, options: DecodeOptions): Promis
       await fs.unlink(tmpOutputPath);
     } catch { /* ignore */ }
   }
+}
+
+/**
+ * Decode HEIC/HEIF file using macOS sips
+ *
+ * Sharp's libheif often lacks the x265/HEVC codec needed for Apple HEIC files.
+ * This fallback uses macOS native sips which fully supports Apple's HEIC format.
+ *
+ * @param filePath - Path to HEIC/HEIF file
+ * @param options - Decode options (quality for JPEG output)
+ * @returns Buffer containing decoded JPEG image
+ */
+export async function decodeHeic(filePath: string, options?: { quality?: number }): Promise<Buffer> {
+  // Check platform - sips is macOS only
+  if (process.platform !== 'darwin') {
+    throw new ShoemakerError(
+      'HEIC decoding via sips is only available on macOS',
+      ErrorCode.DECODER_NOT_AVAILABLE,
+      filePath
+    );
+  }
+
+  const tmpDir = os.tmpdir();
+  const uniqueId = crypto.randomBytes(8).toString('hex');
+  const tmpFile = path.join(tmpDir, `shoemaker-heic-${uniqueId}.jpg`);
+
+  try {
+    // sips -s format jpeg -s formatOptions <quality> <input> --out <output>
+    const quality = options?.quality ?? 95;
+    await execFileAsync('sips', [
+      '-s', 'format', 'jpeg',
+      '-s', 'formatOptions', String(quality),
+      filePath,
+      '--out', tmpFile,
+    ], {
+      timeout: 60000, // 1 minute timeout
+    });
+
+    // Read the output file
+    const buffer = await fs.readFile(tmpFile);
+
+    if (buffer.length === 0) {
+      throw new ShoemakerError(
+        'sips produced empty output',
+        ErrorCode.DECODE_FAILED,
+        filePath
+      );
+    }
+
+    return buffer;
+  } catch (err) {
+    if (err instanceof ShoemakerError) throw err;
+    throw new ShoemakerError(
+      `HEIC decode via sips failed: ${(err as Error).message}`,
+      ErrorCode.DECODE_FAILED,
+      filePath
+    );
+  } finally {
+    // Clean up temp file
+    try {
+      await fs.unlink(tmpFile);
+    } catch {
+      // Ignore cleanup errors
+    }
+  }
+}
+
+/**
+ * Check if HEIC decoding is available (macOS with sips)
+ */
+export function isHeicDecodingAvailable(): boolean {
+  return process.platform === 'darwin';
 }
 
 /**

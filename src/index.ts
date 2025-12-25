@@ -82,6 +82,8 @@ export {
 
 export {
   decodeRawFile,
+  decodeHeic,
+  isHeicDecodingAvailable,
   detectAvailableDecoders,
   selectDecoder,
   isDecoderAvailable,
