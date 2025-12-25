@@ -83,12 +83,31 @@ export async function analyzeEmbeddedPreviews(filePath: string): Promise<Preview
     const thumbnailImage = extractPreviewInfo(tags, 'ThumbnailImage');
 
     // Find best preview (largest that exists)
+    // Two-pass: first try previews with known dimensions, then fall back to those with only length
     let bestPreview: PreviewAnalysis['bestPreview'] = null;
+    const previewMap = { JpgFromRaw: jpgFromRaw, PreviewImage: previewImage, OtherImage: otherImage, ThumbnailImage: thumbnailImage };
+
+    // Pass 1: Prefer previews with dimensions (can compare by width)
     for (const tag of PREVIEW_TAGS) {
-      const info = { JpgFromRaw: jpgFromRaw, PreviewImage: previewImage, OtherImage: otherImage, ThumbnailImage: thumbnailImage }[tag];
+      const info = previewMap[tag];
       if (info.exists && info.width && info.height) {
         if (!bestPreview || (info.width > bestPreview.width)) {
           bestPreview = { type: tag, width: info.width, height: info.height };
+        }
+      }
+    }
+
+    // Pass 2: If no dimensioned previews, use length as quality proxy (many RAW files omit dimensions)
+    // JpgFromRaw typically has dimensions after extraction, so still prioritize by tag order
+    if (!bestPreview) {
+      let bestLength = 0;
+      for (const tag of PREVIEW_TAGS) {
+        const info = previewMap[tag];
+        // Exists with length > reasonable minimum (10KB) suggests a usable preview
+        if (info.exists && info.length && info.length > 10240 && info.length > bestLength) {
+          bestLength = info.length;
+          // Use 0 for width/height to indicate "dimensions unknown - extract to measure"
+          bestPreview = { type: tag, width: 0, height: 0 };
         }
       }
     }
@@ -161,6 +180,7 @@ function extractPreviewInfo(tags: unknown, tagName: string): PreviewInfo {
  * Extract the best available preview as a buffer
  */
 export async function extractBestPreview(filePath: string, minSize?: number): Promise<{ buffer: Buffer; tag: PreviewTag; width: number; height: number }> {
+  const sharp = (await import('sharp')).default;
   const analysis = await analyzeEmbeddedPreviews(filePath);
 
   if (!analysis.bestPreview) {
@@ -171,22 +191,42 @@ export async function extractBestPreview(filePath: string, minSize?: number): Pr
     );
   }
 
+  // Extract the preview buffer
+  const buffer = await extractPreviewBuffer(filePath, analysis.bestPreview.type);
+
+  // Determine dimensions: use metadata if known, otherwise measure from buffer
+  let width = analysis.bestPreview.width;
+  let height = analysis.bestPreview.height;
+
+  if (width === 0 || height === 0) {
+    // Dimensions weren't in metadata - measure from extracted buffer
+    const metadata = await sharp(buffer).metadata();
+    width = metadata.width ?? 0;
+    height = metadata.height ?? 0;
+
+    if (width === 0 || height === 0) {
+      throw new ShoemakerError(
+        `Could not determine preview dimensions for ${filePath}`,
+        ErrorCode.NO_PREVIEW,
+        filePath
+      );
+    }
+  }
+
   // Check if preview meets minimum size requirement
-  if (minSize && analysis.bestPreview.width < minSize) {
+  if (minSize && width < minSize) {
     throw new ShoemakerError(
-      `Best preview (${analysis.bestPreview.width}px) below minimum size (${minSize}px)`,
+      `Best preview (${width}px) below minimum size (${minSize}px)`,
       ErrorCode.NO_PREVIEW,
       filePath
     );
   }
 
-  const buffer = await extractPreviewBuffer(filePath, analysis.bestPreview.type);
-
   return {
     buffer,
     tag: analysis.bestPreview.type,
-    width: analysis.bestPreview.width,
-    height: analysis.bestPreview.height,
+    width,
+    height,
   };
 }
 

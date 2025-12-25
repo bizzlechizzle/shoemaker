@@ -250,13 +250,39 @@ export async function generateForFile(
     // RAW file - try to extract preview
     const analysis = await analyzeEmbeddedPreviews(filePath);
 
-    if (analysis.bestPreview && analysis.bestPreview.width >= config.processing.minPreviewSize) {
-      // Fast path: extract embedded preview
+    if (analysis.bestPreview) {
+      // Extract preview and get actual dimensions (may not be in metadata)
       const extracted = await extractBestPreview(filePath);
-      sourceBuffer = extracted.buffer;
-      method = 'extracted';
+      const actualWidth = extracted.width;
+
+      if (actualWidth >= config.processing.minPreviewSize) {
+        // Fast path: embedded preview is large enough
+        sourceBuffer = extracted.buffer;
+        method = 'extracted';
+      } else if (behavior.fallbackToRaw) {
+        // Preview too small, decode RAW for better quality
+        const decodeOptions: DecodeOptions = {
+          decoder: behavior.decoder as DecodeOptions['decoder'],
+          fallbackDecoder: behavior.fallbackDecoder as DecodeOptions['decoder'],
+          targetWidth: config.processing.minPreviewSize,
+          quality: 95,
+        };
+        sourceBuffer = await decodeRaw(filePath, decodeOptions);
+        method = 'decoded';
+      } else if (behavior.useLargestAvailable) {
+        // Use whatever's available even if small
+        sourceBuffer = extracted.buffer;
+        method = 'extracted';
+        warnings.push(`Preview size ${actualWidth}px below minimum ${config.processing.minPreviewSize}px`);
+      } else {
+        throw new ShoemakerError(
+          `Preview size ${actualWidth}px below minimum ${config.processing.minPreviewSize}px and fallback disabled`,
+          ErrorCode.NO_PREVIEW,
+          filePath
+        );
+      }
     } else if (behavior.fallbackToRaw) {
-      // Slow path: decode RAW using configured decoder
+      // No preview at all, decode RAW
       const decodeOptions: DecodeOptions = {
         decoder: behavior.decoder as DecodeOptions['decoder'],
         fallbackDecoder: behavior.fallbackDecoder as DecodeOptions['decoder'],
@@ -265,12 +291,6 @@ export async function generateForFile(
       };
       sourceBuffer = await decodeRaw(filePath, decodeOptions);
       method = 'decoded';
-    } else if (behavior.useLargestAvailable && analysis.bestPreview) {
-      // Use whatever's available
-      const extracted = await extractBestPreview(filePath);
-      sourceBuffer = extracted.buffer;
-      method = 'extracted';
-      warnings.push(`Preview size ${analysis.bestPreview.width}px below minimum ${config.processing.minPreviewSize}px`);
     } else {
       throw new ShoemakerError(
         `No suitable preview found and RAW fallback disabled`,
