@@ -224,6 +224,7 @@ export async function generateForFile(
   // Determine source method and get source buffer
   let sourceBuffer: Buffer;
   let method: 'extracted' | 'decoded' | 'direct';
+  let rotationAngle = 0; // Explicit rotation for extracted previews (0 = use EXIF from buffer)
 
   if (isDecodedFormat(filePath)) {
     // Already decoded (JPEG, PNG, HEIC, etc) - read directly
@@ -282,6 +283,7 @@ export async function generateForFile(
 
     if (analysis.bestPreview) {
       // Extract preview and get actual dimensions (may not be in metadata)
+      // Also captures orientation from source file (extracted previews lose EXIF orientation)
       const extracted = await extractBestPreview(filePath);
       const actualWidth = extracted.width;
 
@@ -289,6 +291,7 @@ export async function generateForFile(
         // Fast path: embedded preview is large enough
         sourceBuffer = extracted.buffer;
         method = 'extracted';
+        rotationAngle = extracted.orientation; // Use source file's orientation
       } else if (behavior.fallbackToRaw) {
         // Preview too small, decode RAW for better quality
         const decodeOptions: DecodeOptions = {
@@ -303,6 +306,7 @@ export async function generateForFile(
         // Use whatever's available even if small
         sourceBuffer = extracted.buffer;
         method = 'extracted';
+        rotationAngle = extracted.orientation; // Use source file's orientation
         warnings.push(`Preview size ${actualWidth}px below minimum ${config.processing.minPreviewSize}px`);
       } else {
         throw new ShoemakerError(
@@ -357,6 +361,8 @@ export async function generateForFile(
   const outputDir = getOutputDir(filePath, stem, config);
 
   // Generate all thumbnail sizes
+  // Pass rotationAngle for extracted previews (they lose EXIF orientation)
+  // For direct files, rotationAngle is 0 so Sharp will read EXIF from buffer
   const thumbnails = await resizeThumbnails(
     sourceBuffer,
     outputDir,
@@ -365,6 +371,7 @@ export async function generateForFile(
     {
       stripExif: config.processing.stripExif,
       autoRotate: config.processing.autoRotate,
+      rotationAngle,
     }
   );
 

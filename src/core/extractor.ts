@@ -15,6 +15,32 @@ import { ShoemakerError, ErrorCode, wrapError } from './errors.js';
 const PREVIEW_TAGS = ['JpgFromRaw', 'PreviewImage', 'OtherImage', 'ThumbnailImage'] as const;
 type PreviewTag = typeof PREVIEW_TAGS[number];
 
+/**
+ * Convert EXIF Orientation tag value to Sharp rotation angle.
+ * EXIF Orientation values:
+ *   1 = Normal (0°)
+ *   2 = Mirrored horizontal
+ *   3 = Rotated 180°
+ *   4 = Mirrored vertical
+ *   5 = Mirrored horizontal + rotated 270° CW
+ *   6 = Rotated 90° CW (270° CCW)
+ *   7 = Mirrored horizontal + rotated 90° CW
+ *   8 = Rotated 270° CW (90° CCW)
+ *
+ * Sharp .rotate() accepts: 0, 90, 180, 270
+ * Note: Sharp handles mirroring separately with .flip()/.flop()
+ * For simplicity, we only handle rotation (1, 3, 6, 8 are most common)
+ */
+export function orientationToRotation(orientation: number | string | undefined): number {
+  const o = typeof orientation === 'string' ? parseInt(orientation, 10) : orientation;
+  switch (o) {
+    case 3: return 180;
+    case 6: return 90;  // 90° CW to correct
+    case 8: return 270; // 270° CW (90° CCW) to correct
+    default: return 0;  // Normal or unknown
+  }
+}
+
 // LRU cache for preview analysis results
 const PREVIEW_CACHE_MAX_SIZE = 1000;
 const previewCache = new Map<string, { analysis: PreviewAnalysis; timestamp: number }>();
@@ -178,8 +204,9 @@ function extractPreviewInfo(tags: unknown, tagName: string): PreviewInfo {
 
 /**
  * Extract the best available preview as a buffer
+ * Also reads orientation from source file since extracted previews lose EXIF orientation
  */
-export async function extractBestPreview(filePath: string, minSize?: number): Promise<{ buffer: Buffer; tag: PreviewTag; width: number; height: number }> {
+export async function extractBestPreview(filePath: string, minSize?: number): Promise<{ buffer: Buffer; tag: PreviewTag; width: number; height: number; orientation: number }> {
   const sharp = (await import('sharp')).default;
   const analysis = await analyzeEmbeddedPreviews(filePath);
 
@@ -189,6 +216,29 @@ export async function extractBestPreview(filePath: string, minSize?: number): Pr
       ErrorCode.NO_PREVIEW,
       filePath
     );
+  }
+
+  // Read orientation from source file BEFORE extraction
+  // (extracted previews lose EXIF orientation metadata)
+  let orientation = 0;
+  try {
+    const tags = await exiftool.read(filePath);
+    const rawOrientation = (tags as Record<string, unknown>).Orientation;
+    // Orientation can be a number or a string like "Rotate 90 CW"
+    if (typeof rawOrientation === 'number') {
+      orientation = orientationToRotation(rawOrientation);
+    } else if (typeof rawOrientation === 'string') {
+      // Parse string orientation values like "Rotate 90 CW", "Horizontal (normal)"
+      if (rawOrientation.includes('90') && rawOrientation.toLowerCase().includes('cw')) {
+        orientation = 90;
+      } else if (rawOrientation.includes('270') || (rawOrientation.includes('90') && rawOrientation.toLowerCase().includes('ccw'))) {
+        orientation = 270;
+      } else if (rawOrientation.includes('180')) {
+        orientation = 180;
+      }
+    }
+  } catch {
+    // Ignore orientation read errors - will use 0 (no rotation)
   }
 
   // Extract the preview buffer
@@ -227,6 +277,7 @@ export async function extractBestPreview(filePath: string, minSize?: number): Pr
     tag: analysis.bestPreview.type,
     width,
     height,
+    orientation,
   };
 }
 

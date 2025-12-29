@@ -126,7 +126,7 @@ export async function generateThumbnails(
   outputDir: string,
   stem: string,
   sizes: Record<string, SizeConfig>,
-  options: { stripExif?: boolean; autoRotate?: boolean } = {}
+  options: { stripExif?: boolean; autoRotate?: boolean; rotationAngle?: number } = {}
 ): Promise<ThumbnailResult[]> {
   const results: ThumbnailResult[] = [];
 
@@ -136,8 +136,15 @@ export async function generateThumbnails(
   // Create base pipeline with common operations (decode once, reuse for all sizes)
   let basePipeline = sharp(input);
 
-  // Auto-rotate based on EXIF orientation (default: true)
-  if (options.autoRotate !== false) {
+  // Handle rotation:
+  // 1. If explicit rotationAngle is provided (from source file's EXIF for extracted previews), use it
+  // 2. Otherwise, if autoRotate is enabled, let Sharp read EXIF from the buffer
+  // 3. If autoRotate is false, don't rotate
+  if (typeof options.rotationAngle === 'number' && options.rotationAngle !== 0) {
+    // Explicit rotation angle (for extracted previews that lost EXIF orientation)
+    basePipeline = basePipeline.rotate(options.rotationAngle);
+  } else if (options.autoRotate !== false) {
+    // Let Sharp read EXIF orientation from buffer (for direct files like JPEG)
     basePipeline = basePipeline.rotate();
   }
 
